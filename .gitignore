@@ -1,0 +1,28 @@
+# ── Secrets — NEVER commit these ─────────────────────────────
+.env
+*.env
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# ── Node ─────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Output files ─────────────────────────────────────────────
+*.csv
+*.log
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
