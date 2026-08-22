@@ -1,36 +1,62 @@
 # BMS LeadFlow
-**BeMySocial Lead Generation Platform — Week 4 Build**
+**BeMySocial Lead Generation Platform — Week 10 Build**
 
-A full-stack pipeline that finds UK businesses by type and town, matches them to Companies House, and displays a ranked results table.
+A full-stack, PECR-compliant cold-outreach pipeline that discovers UK businesses, matches them to Companies House, scores them, verifies contacts, and sends personalised email sequences — with a built-in approval gate and full dry-run safety mode.
+
+> **Safety first:** `DRY_RUN=true` is the default. No real emails are sent until you explicitly set `DRY_RUN=false` and connect a warmed-up sending domain.
 
 ---
 
-## Project structure
+## Architecture overview
 
 ```
 leadflow/
 ├── backend/
-│   ├── main.py              ← FastAPI server (start this first)
-│   ├── pipeline.py          ← Discovery pipeline orchestrator
-│   ├── google_maps.py       ← Google Maps Places API (Vinay)
-│   ├── companies_house.py   ← Companies House matching (Arkana)
-│   ├── database.py          ← Supabase read/write layer (Prashanth)
-│   └── requirements.txt
+│   ├── main.py                  ← FastAPI server — all API endpoints
+│   ├── pipeline.py              ← Discovery orchestrator (Maps → CH → score → verify)
+│   ├── google_maps.py           ← Google Maps Places API
+│   ├── companies_house.py       ← CH matching + director lookup
+│   ├── website_checker.py       ← SSL, PageSpeed API, mobile score
+│   ├── scoring.py               ← 40/30/30 ICP-fit / reachability / opportunity
+│   ├── database.py              ← Supabase read/write layer
+│   ├── email_verify.py          ← MillionVerifier integration + should_send() gate
+│   ├── email_provider.py        ← Abstract provider + DryRunProvider factory
+│   ├── smartlead_provider.py    ← Smartlead email platform adapter
+│   ├── compliance.py            ← PECR gates, UK sending hours, footer builder
+│   ├── campaign_engine.py       ← Send, follow-up scheduling, webhook processor
+│   ├── email_templates.py       ← Initial + 2 follow-up templates
+│   ├── claude_personalise.py    ← Claude Haiku opening-line generator (with safety check)
+│   ├── .env.example             ← All required environment variables
+│   ├── requirements.txt
+│   └── tests/
+│       ├── conftest.py          ← Safe test defaults (DRY_RUN=true, empty API keys)
+│       ├── test_scoring.py
+│       ├── test_email_verify.py
+│       ├── test_suppression.py
+│       ├── test_compliance.py
+│       ├── test_deduplication.py
+│       ├── test_webhooks.py
+│       ├── test_scheduling.py
+│       ├── test_ch_matching.py
+│       └── test_ai_personalisation.py
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx                        ← Main app + state
-│   │   ├── index.css                      ← All styles
+│   │   ├── App.jsx                      ← Auth gate + tab router
+│   │   ├── index.css
 │   │   └── components/
-│   │       ├── SearchForm.jsx             ← Search inputs
-│   │       ├── StatsBar.jsx               ← Pipeline stats
-│   │       ├── CompanyTable.jsx           ← Sortable results table
-│   │       └── RunsHistory.jsx            ← Past runs view
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.js
+│   │       ├── SearchForm.jsx           ← Discovery search
+│   │       ├── CompanyTable.jsx         ← Sortable results
+│   │       ├── StatsBar.jsx             ← Pipeline stats
+│   │       ├── RunsHistory.jsx          ← Past runs
+│   │       ├── CampaignMonitor.jsx      ← Campaign dashboard + budget
+│   │       ├── ApprovalQueue.jsx        ← AI opening-line review
+│   │       ├── CompliancePage.jsx       ← PECR gates + suppression list
+│   │       └── LoginPage.jsx            ← Supabase Auth login
+│   ├── .env.example
+│   └── package.json
 ├── supabase/
-│   └── schema.sql           ← Run this in Supabase SQL Editor
-├── .env.example             ← Copy to .env and fill in keys
+│   ├── schema.sql               ← Original schema (Weeks 1–4)
+│   └── migrations_week10.sql    ← Week 10 additions (run after schema.sql)
 ├── .gitignore
 └── README.md
 ```
@@ -39,15 +65,21 @@ leadflow/
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 18+
-- A Supabase project (free tier at supabase.com)
-- A Google Maps API key (free tier at console.cloud.google.com)
-- A Companies House API key (free at developer.company-information.service.gov.uk)
+| Requirement | Notes |
+|---|---|
+| Python 3.11+ | Backend runtime |
+| Node.js 18+ | Frontend runtime |
+| Supabase project | Free tier at supabase.com |
+| Google Maps API key | Enable Places API (Legacy) in Cloud Console |
+| Companies House API key | Free at developer.company-information.service.gov.uk |
+| MillionVerifier API key | Email verification — app.millionverifier.com |
+| Anthropic API key | Claude Haiku for personalisation — console.anthropic.com |
+| Google PageSpeed key | Optional — console.cloud.google.com (enable PageSpeed Insights API) |
+| Smartlead API key | Only needed when DRY_RUN=false and ready for live sending |
 
 ---
 
-## One-time setup (do this once)
+## One-time setup
 
 ### Step 1 — Clone and configure
 
@@ -55,38 +87,59 @@ leadflow/
 git clone <your-repo-url>
 cd leadflow
 
-# Copy the env template
-cp .env.example .env
+# Backend
+cp backend/.env.example backend/.env
+
+# Frontend
+cp frontend/.env.example frontend/.env
 ```
 
-Open `.env` and fill in:
-- `SUPABASE_URL` — from Supabase dashboard → Project Settings → API
-- `SUPABASE_SERVICE_KEY` — the **service role** key (not anon)
-- `GOOGLE_MAPS_API_KEY` — from Google Cloud Console (enable Places API legacy)
-- `COMPANIES_HOUSE_API_KEY` — from Companies House developer portal (free)
+Fill in `backend/.env`:
 
-**Never commit `.env` to Git. Never paste keys into Lovable prompts.**
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...  # SERVICE ROLE key — NOT the anon key
+GOOGLE_MAPS_API_KEY=AIza...
+COMPANIES_HOUSE_API_KEY=...
+MILLION_VERIFIER_API_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_PAGESPEED_KEY=AIza...  # Optional — omit to use response-time fallback
+SMARTLEAD_API_KEY=...         # Only needed when DRY_RUN=false
+
+BMS_COMPANY_NUMBER=12345678
+BMS_REGISTERED_ADDRESS=1 Example Street, London, EC1A 1BB
+BMS_UNSUBSCRIBE_BASE_URL=https://your-app.com/unsubscribe
+
+DRY_RUN=true   # KEEP THIS TRUE during development and testing
+```
+
+Fill in `frontend/.env`:
+
+```env
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJ...   # ANON key only — never the service role key
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+> **NEVER commit `.env` to Git. NEVER paste secret values into Lovable prompts.**
 
 ### Step 2 — Set up the Supabase database
 
-1. Open your Supabase project at supabase.com
-2. Go to SQL Editor
-3. Open `supabase/schema.sql`
-4. Paste the entire contents and click Run
+1. Open your Supabase project → SQL Editor
+2. Run `supabase/schema.sql` (base tables)
+3. Run `supabase/migrations_week10.sql` (contacts, campaigns, events, follow_ups, budget_log)
 
-This creates all the tables: `companies`, `discovery_runs`, `suppression_list`, `icp_profiles`, `decisions_log`.
+Enable Row-Level Security (RLS) on all tables — the migrations file includes the policies.
 
-### Step 3 — Install backend dependencies
+### Step 3 — Install dependencies
 
 ```bash
+# Backend
 cd backend
 pip install -r requirements.txt
-```
 
-### Step 4 — Install frontend dependencies
-
-```bash
-cd frontend
+# Frontend
+cd ../frontend
 npm install
 ```
 
@@ -94,135 +147,188 @@ npm install
 
 ## Running the project
 
-You need two terminal windows — one for the backend, one for the frontend.
+Open two terminal windows.
 
-### Terminal 1 — Backend (FastAPI)
+### Terminal 1 — Backend
 
 ```bash
 cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-You should see:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000
-INFO:     Application startup complete.
-```
+Verify: `GET http://localhost:8000/health` → `{"status":"ok","version":"1.0.0"}`
 
-Verify it works: open http://localhost:8000/health in your browser.
-You should see: `{"status":"ok","version":"0.4.0"}`
+Interactive API docs: `http://localhost:8000/docs`
 
-### Terminal 2 — Frontend (React + Vite)
+### Terminal 2 — Frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-You should see:
-```
-  VITE v5.x.x  ready in xxx ms
-  ➜  Local:   http://localhost:5173/
-```
+Open `http://localhost:5173`
 
-Open http://localhost:5173 in your browser.
+If `VITE_SUPABASE_URL` is set, you will see a login screen (Supabase Auth). Without it, the login screen is skipped (dev mode).
 
 ---
 
-## How to use it
-
-1. **Open** http://localhost:5173
-2. **Type a business type** — e.g. `plumber`, `accountant`, `estate agent`
-3. **Type a UK town** — e.g. `Leeds`, `Manchester`, `Bristol`
-4. **Set max results** (10–60; Google's hard cap is 60)
-5. **Click "Find Leads"**
-
-The pipeline runs:
-- Searches Google Maps → up to 60 businesses
-- Fetches full details for each (phone, website, rating)
-- Matches each to Companies House (active, incorporated entities only)
-- Stores everything in Supabase
-- Returns results to the table
-
-⏳ **This takes 1–3 minutes for 50 companies.** The loading screen tells you this. Don't refresh — wait for it.
-
-### What the table shows
-
-| Column | What it is |
-|---|---|
-| Business | Google Maps name. Clickable if they have a website. |
-| Registered Name | Official name from Companies House |
-| Company No. | Links directly to Companies House profile |
-| Type | ltd, llp, plc etc. |
-| Address | Registered address |
-| Website | ✓ Yes / ✗ None |
-| CH Match | Whether we matched to Companies House |
-| Rating | Google star rating |
-| Reviews | Number of Google reviews |
-| Score | Pipeline score 0–100 (scoring engine week 5+) |
-
-Click any column header to sort. Use the filter box to search by name, company number, or address.
-
----
-
-## Running the pipeline from the command line (no frontend needed)
+## Running the test suite
 
 ```bash
 cd backend
-python pipeline.py --type "plumber" --town "Leeds" --max 50
+python -m pytest tests/ -v
 ```
 
-This runs the full pipeline and prints results to the terminal. Useful for testing without the UI.
+90 tests, all passing. Tests use mocked APIs — no real HTTP calls, no real database writes, no real emails.
 
 ---
 
-## API endpoints
+## How the pipeline works
 
-The FastAPI server exposes these endpoints. You can test them at http://localhost:8000/docs (auto-generated Swagger UI).
+```
+Google Maps → Companies House match → Website check (SSL + PageSpeed)
+    → 40/30/30 Scoring → MillionVerifier email verification
+    → Contacts table → Campaign membership → Compliance gates
+    → DRY_RUN send (or real send) → Follow-up scheduling → Webhook events
+```
 
-| Method | Endpoint | What it does |
+### Scoring (40/30/30)
+
+| Component | Max pts | Key signals |
 |---|---|---|
-| GET | `/health` | Health check |
-| POST | `/api/search` | Trigger discovery pipeline |
-| GET | `/api/companies` | List companies (filter by run_id, status) |
-| GET | `/api/runs` | List discovery runs |
-| GET | `/api/stats` | Pipeline counts and percentages |
-| GET | `/api/suppression` | View suppression list |
-| POST | `/api/suppression` | Add to suppression list |
+| ICP Fit | 40 | CH matched, active status, ICP profile match, company age |
+| Reachability | 30 | Email verified, named contact, email quality |
+| Opportunity | 30 | Website issues found (no SSL, slow, no mobile, missing meta) |
+
+**Threshold:** ≥ 60 required to enter a campaign.
+
+### Email verification (MillionVerifier)
+
+| MV result | Internal status | Can send? |
+|---|---|---|
+| ok | good | ✅ Yes |
+| catch_all | catch_all | ✅ Yes |
+| unknown | unverified | ❌ No |
+| invalid / disposable / spamtrap | bad | ❌ No |
+| role / mailbox_full | risky | ❌ No |
+
+### PECR compliance gates (checked at send time)
+
+1. Company is `ch_matched` and `company_status = active`
+2. Contact email exists
+3. Email status is `good` or `catch_all`
+4. Email not in suppression list (checked at send time, not just discovery)
+5. Campaign is `active`
+6. Daily send limit not exceeded
+7. Within UK sending hours: Mon–Fri 09:00–17:00 (skipped in dry-run)
+8. Score ≥ 60
+
+### Email sequence
+
+| Step | When |
+|---|---|
+| Initial | On campaign send |
+| Follow-up 1 | +4 business days (skips weekends) |
+| Follow-up 2 | +11 business days (skips weekends) |
+
+Auto-suppression: bounce or unsubscribe → added to suppression list + follow-ups cancelled.
+
+### AI personalisation (Claude Haiku)
+
+Generates a single opening line using only verified audit facts. Safety check: any output containing invented percentages (`\d{2,3}%`) is rejected and replaced with a rule-based fallback. All AI-generated opening lines go through the human approval queue before sending.
+
+### Dry-run mode
+
+When `DRY_RUN=true` (the default):
+- All sends are logged to the console, not transmitted
+- The sending-hours gate is skipped
+- The `campaigns.dry_run` column defaults to `TRUE`
+- No Smartlead API calls are made
+
+When `DRY_RUN=false`:
+- All 8 compliance gates are enforced
+- Real emails are sent via Smartlead
+- Requires a warmed-up inbox and a verified sending domain
+
+---
+
+## API reference
+
+Full interactive docs at `http://localhost:8000/docs`. Key endpoints:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/search` | Run discovery pipeline |
+| POST | `/api/bulk-search` | Run multiple searches in sequence |
+| GET | `/api/companies` | List companies (filter by run_id, status, score) |
+| POST | `/api/verify-email` | Verify a single email with MillionVerifier |
+| GET/POST | `/api/campaigns` | List / create campaigns |
+| POST | `/api/campaigns/{id}/populate` | Add qualified companies as members |
+| POST | `/api/send/{member_id}` | Send/dry-run email to one member |
+| POST | `/api/process-follow-ups` | Batch-process due follow-ups |
+| POST | `/api/webhook/email` | Receive events from Smartlead |
+| GET | `/api/approval-queue` | List pending AI opening lines |
+| POST | `/api/approval-queue/{id}` | Approve / reject / edit an opening line |
+| POST | `/api/personalise/{company_id}` | Generate Claude opening line |
+| GET | `/api/compliance/checklist` | System + manual compliance gate status |
+| GET/POST | `/api/suppression` | View / add suppression entries |
+| GET | `/api/budget` | Monthly budget summary |
+
+---
+
+## Dashboard tabs (frontend)
+
+| Tab | Purpose |
+|---|---|
+| 🔍 Search | Run discovery searches |
+| 📊 Results | View and sort scored companies |
+| 📣 Campaigns | Monitor send stats, budget, events |
+| ✅ Approval | Review and approve AI-generated opening lines |
+| ⚖️ Compliance | System gate status + suppression list management |
+| 📁 Runs | History of past discovery runs |
+
+---
+
+## Scheduled automation
+
+Follow-up processing and campaign population can be automated via pg_cron (requires enabling pg_cron in Supabase dashboard). SQL stubs are included in `migrations_week10.sql` (commented out — uncomment once pg_cron is enabled).
+
+Manual trigger via cron or n8n: `POST /api/process-follow-ups`
+
+---
+
+## Security checklist
+
+- [x] `.env` in `.gitignore` — secrets never committed
+- [x] `SUPABASE_SERVICE_KEY` never exposed to frontend
+- [x] Frontend uses `VITE_SUPABASE_ANON_KEY` (anon key only)
+- [x] RLS enabled on all Supabase tables
+- [x] `DRY_RUN=true` default — no accidental live sends
+- [x] `campaigns.dry_run` defaults to `TRUE` at DB level
+- [x] Suppression checked at send time (not just at discovery)
+- [x] AI outputs safety-checked — invented percentages trigger fallback
+- [x] Webhook event deduplication via `provider_event_id` unique index
+- [x] PECR footer mandatory on all outbound emails
+- [x] UK business hours gate enforced in live mode
 
 ---
 
 ## Troubleshooting
 
-**"Cannot reach the backend API"** — Start the FastAPI server (Terminal 1 above).
+**"Cannot reach the backend API"** — Start `uvicorn main:app --reload --port 8000`
 
-**"SUPABASE_URL and SUPABASE_SERVICE_KEY must be set"** — Check your `.env` file has the correct values with no extra spaces.
+**"SUPABASE_SERVICE_KEY must be set"** — Check `backend/.env`. Use the service role key, not the anon key.
 
-**"Google Maps API error: REQUEST_DENIED"** — Your API key is wrong, or the Places API is not enabled in Google Cloud Console.
+**MV verification returns `unverified` for everything** — `MILLION_VERIFIER_API_KEY` is empty. Check `.env`.
 
-**Pipeline returns 0 results** — Try a more common business type or a larger UK city.
+**AI opening lines not generating** — `ANTHROPIC_API_KEY` is empty. Rule-based fallback is used automatically.
 
-**Companies House returns no matches** — This is normal. Many Google Maps listings are sole traders or have different registered names. The pipeline still stores them with `ch_matched = false`.
+**PageSpeed scores missing** — `GOOGLE_PAGESPEED_KEY` not set. Response-time proxy is used; `mobile_score` will be `null`.
 
-**Supabase insert error "unique constraint"** — The company is already in the database from a previous run. This is handled by upsert — it updates the existing record.
+**Campaign stuck in `draft`** — Run `POST /api/campaigns/{id}/populate` to add members, then set status to `active`.
 
----
-
-## Week-by-week build plan
-
-| Week | What's added |
-|---|---|
-| 3 ✅ | Repo, Supabase schema, Lovable page, API keys |
-| 4 ✅ | **This build** — company search, CH matching, results table |
-| 5 | Website checker (SSL, PageSpeed, mobile) |
-| 6 | **Demo 1** — scoring, ranked table, fully automated |
-| 7 | Contact enrichment, named person, verified email |
-| 8 | Dashboard v1 — stage counts, prospect table |
-| 9 | Email drafts, approval flow, Smartlead/Instantly |
-| 10 | End-to-end test at volume |
-| 11 | Polish, docs, cost tracking |
-| 12 | Final demo prep |
-| 13 | Final demo and handover |
+**Follow-ups not sending** — Check `POST /api/process-follow-ups` is being called on schedule.
 
 ---
 
@@ -230,12 +336,12 @@ The FastAPI server exposes these endpoints. You can test them at http://localhos
 
 | Role | Owner | Workstream |
 |---|---|---|
-| Data lead | Vinay | Google Maps API, repo structure |
-| Pipeline lead | Arkana | Companies House matching, company matching function |
-| Platform lead | Prashanth | Supabase schema, n8n, database layer |
-| Outreach lead | Prince | Lovable frontend, email verification |
-| Compliance lead | Harika | n8n webhooks, API response quality |
+| Data lead | Vinay | Google Maps API, scoring, repo |
+| Pipeline lead | Arkana | Companies House, pipeline orchestration |
+| Platform lead | Prashanth | Supabase, campaign engine, webhooks |
+| Outreach lead | Prince | Frontend, email templates, AI personalisation |
+| Compliance lead | Harika | PECR gates, suppression, compliance dashboard |
 
 ---
 
-*BMS LeadFlow v0.4.0 — Week 4 | Prepared for BeMySocial UEL placement team*
+*BMS LeadFlow v1.0.0 — Week 10 | BeMySocial UEL placement team*

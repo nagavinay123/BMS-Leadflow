@@ -1,50 +1,91 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import SearchForm     from './components/SearchForm.jsx'
-import StatsBar       from './components/StatsBar.jsx'
-import CompanyTable   from './components/CompanyTable.jsx'
-import RunsHistory    from './components/RunsHistory.jsx'
-import PipelineFunnel from './components/PipelineFunnel.jsx'
-import OutreachQueue  from './components/OutreachQueue.jsx'
-import Analytics      from './components/Analytics.jsx'
-import ICPProfiles    from './components/ICPProfiles.jsx'
+import { createClient } from '@supabase/supabase-js'
+import SearchForm      from './components/SearchForm.jsx'
+import StatsBar        from './components/StatsBar.jsx'
+import CompanyTable    from './components/CompanyTable.jsx'
+import RunsHistory     from './components/RunsHistory.jsx'
+import PipelineFunnel  from './components/PipelineFunnel.jsx'
+import OutreachQueue   from './components/OutreachQueue.jsx'
+import Analytics       from './components/Analytics.jsx'
+import ICPProfiles     from './components/ICPProfiles.jsx'
+import CampaignMonitor from './components/CampaignMonitor.jsx'
+import ApprovalQueue   from './components/ApprovalQueue.jsx'
+import CompliancePage  from './components/CompliancePage.jsx'
+import LoginPage, { ConfigWarning } from './components/LoginPage.jsx'
 import bmsLogo from './bms-logo.png'
 
+// ── Supabase client ───────────────────────────────────────────
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
+const supabase = (SUPABASE_URL && SUPABASE_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null
+
+// ── Constants ─────────────────────────────────────────────────
 const LOADING_MESSAGES = [
-  { icon: '📍', text: 'Searching Google Maps for businesses…'           },
-  { icon: '🔍', text: 'Fetching place details for each result…'         },
-  { icon: '🏢', text: 'Matching to Companies House register…'           },
-  { icon: '⚖️',  text: 'Checking PECR — incorporated entities only…'   },
-  { icon: '👤', text: 'Looking up company directors…'                   },
-  { icon: '💾', text: 'Storing verified companies in database…'          },
-  { icon: '🌐', text: 'Checking websites — SSL, title, meta tags…'      },
-  { icon: '📧', text: 'Scraping contact emails from websites…'           },
-  { icon: '⚡', text: 'Running Google PageSpeed audit (desktop)…'        },
-  { icon: '📱', text: 'Running Google PageSpeed audit (mobile)…'        },
-  { icon: '🏆', text: 'Scoring companies 0–100…'                        },
-  { icon: '✅', text: 'Almost done — ranking by score…'                  },
+  { icon: '📍', text: 'Searching Google Maps for businesses…'         },
+  { icon: '🔍', text: 'Fetching place details for each result…'       },
+  { icon: '🏢', text: 'Matching to Companies House register…'         },
+  { icon: '⚖️',  text: 'Checking PECR — incorporated entities only…' },
+  { icon: '👤', text: 'Looking up company directors…'                 },
+  { icon: '💾', text: 'Storing verified companies in database…'        },
+  { icon: '🌐', text: 'Checking websites — SSL, title, meta tags…'    },
+  { icon: '📧', text: 'Scraping contact emails from websites…'         },
+  { icon: '⚡', text: 'Running Google PageSpeed audit (desktop)…'      },
+  { icon: '📱', text: 'Running Google PageSpeed audit (mobile)…'      },
+  { icon: '🏆', text: 'Scoring companies 0–100…'                      },
+  { icon: '✅', text: 'Almost done — ranking by score…'                },
 ]
 
 const TABS = [
-  { id: 'search',   label: '🔍 Search'    },
-  { id: 'funnel',   label: '📊 Funnel'    },
-  { id: 'outreach', label: '📧 Outreach'  },
-  { id: 'analytics',label: '📈 Analytics' },
-  { id: 'icp',      label: '🎯 ICP'       },
-  { id: 'runs',     label: '📋 History'   },
+  { id: 'search',     label: '🔍 Search'     },
+  { id: 'funnel',     label: '📊 Funnel'     },
+  { id: 'outreach',   label: '📧 Outreach'   },
+  { id: 'campaigns',  label: '📣 Campaigns'  },
+  { id: 'approval',   label: '✅ Approval'   },
+  { id: 'analytics',  label: '📈 Analytics'  },
+  { id: 'icp',        label: '🎯 ICP'        },
+  { id: 'compliance', label: '⚖️ Compliance' },
+  { id: 'runs',       label: '📋 History'    },
 ]
 
 export default function App() {
-  const [companies,  setCompanies]  = useState([])
-  const [stats,      setStats]      = useState(null)
-  const [runs,       setRuns]       = useState([])
-  const [loading,    setLoading]    = useState(false)
-  const [error,      setError]      = useState(null)
-  const [lastRun,    setLastRun]    = useState(null)
-  const [tab,        setTab]        = useState('search')
-  const [apiOk,      setApiOk]      = useState(null)
-  const [msgIdx,     setMsgIdx]     = useState(0)
+  const [companies,   setCompanies]   = useState([])
+  const [stats,       setStats]       = useState(null)
+  const [runs,        setRuns]        = useState([])
+  const [loading,     setLoading]     = useState(false)
+  const [error,       setError]       = useState(null)
+  const [lastRun,     setLastRun]     = useState(null)
+  const [tab,         setTab]         = useState('search')
+  const [apiOk,       setApiOk]       = useState(null)
+  const [msgIdx,      setMsgIdx]      = useState(0)
+  const [session,     setSession]     = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const msgTimer = useRef(null)
 
+  // ── Auth: persistent session listener ────────────────────────
+  useEffect(() => {
+    if (!supabase) {
+      // Env vars missing — ConfigWarning will be shown
+      setAuthChecked(true)
+      return
+    }
+
+    // Get initial session
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data?.session || null)
+      setAuthChecked(true)
+    })
+
+    // Listen for sign-in / sign-out / token refresh
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // ── API health + initial data ────────────────────────────────
   useEffect(() => {
     fetch('/health')
       .then(r => r.ok ? setApiOk(true) : setApiOk(false))
@@ -52,9 +93,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (apiOk) { refreshStats(); refreshRuns(); fetchCompanies() }
-  }, [apiOk])
+    if (apiOk && session) { refreshStats(); refreshRuns(); fetchCompanies() }
+  }, [apiOk, session])
 
+  // ── Loading message rotator ──────────────────────────────────
   useEffect(() => {
     if (loading) {
       setMsgIdx(0)
@@ -100,19 +142,76 @@ export default function App() {
     }
   }
 
+  async function handleLogout() {
+    if (supabase) await supabase.auth.signOut()
+    setSession(null)
+  }
+
   function handleViewRun(runId) { fetchCompanies(runId); setTab('search') }
 
   const msg = LOADING_MESSAGES[msgIdx]
+  const userEmail = session?.user?.email || ''
 
+  // ── Guard: env vars missing ───────────────────────────────────
+  if (!supabase) return <ConfigWarning />
+
+  // ── Guard: auth not yet checked ───────────────────────────────
+  if (!authChecked) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: '#0f172a',
+      }}>
+        <div style={{ color: '#fff', fontSize: 14, opacity: 0.6 }}>Loading…</div>
+      </div>
+    )
+  }
+
+  // ── Guard: not logged in ──────────────────────────────────────
+  if (!session) {
+    return <LoginPage supabase={supabase} onLogin={setSession} />
+  }
+
+  // ── Authenticated app ─────────────────────────────────────────
   return (
     <div className="app">
       <header>
         <div className="header-inner">
+          {/* Logo */}
           <div className="logo" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <img src={bmsLogo} alt="BeMySocial Logo" style={{ height: 32, width: 'auto' }} />
+            <img src={bmsLogo} alt="BeMySocial" style={{ height: 32, width: 'auto' }} />
             <span className="logo-name">LeadFlow</span>
             <span className="logo-badge">v1.0</span>
           </div>
+
+          {/* User info + sign out */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto', marginRight: 16 }}>
+            {userEmail && (
+              <span style={{
+                fontSize: 12, color: 'rgba(255,255,255,0.7)',
+                background: 'rgba(255,255,255,0.08)',
+                padding: '4px 10px', borderRadius: 20,
+                maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {userEmail}
+              </span>
+            )}
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '5px 14px', fontSize: 12, fontWeight: 600,
+                border: '1px solid rgba(255,255,255,0.3)', borderRadius: 6,
+                background: 'transparent', color: '#fff', cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
+              onMouseOver={e => e.target.style.background = 'rgba(255,255,255,0.12)'}
+              onMouseOut={e => e.target.style.background = 'transparent'}
+            >
+              Sign out
+            </button>
+          </div>
+
+          {/* Nav tabs */}
           <nav>
             {TABS.map(t => (
               <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
@@ -132,7 +231,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Search ── */}
         {tab === 'search' && (
           <>
             <div className="section-gap">
@@ -171,22 +269,14 @@ export default function App() {
           </>
         )}
 
-        {/* ── Funnel ── */}
-        {tab === 'funnel' && (
-          <div className="section-gap"><PipelineFunnel stats={stats} /></div>
-        )}
-
-        {/* ── Outreach ── */}
-        {tab === 'outreach' && <OutreachQueue />}
-
-        {/* ── Analytics ── */}
-        {tab === 'analytics' && <Analytics />}
-
-        {/* ── ICP ── */}
-        {tab === 'icp' && <ICPProfiles />}
-
-        {/* ── History ── */}
-        {tab === 'runs' && <RunsHistory runs={runs} onViewRun={handleViewRun} onDeleted={refreshRuns} />}
+        {tab === 'funnel'     && <div className="section-gap"><PipelineFunnel stats={stats} /></div>}
+        {tab === 'outreach'   && <OutreachQueue />}
+        {tab === 'analytics'  && <Analytics />}
+        {tab === 'icp'        && <ICPProfiles />}
+        {tab === 'campaigns'  && <CampaignMonitor />}
+        {tab === 'approval'   && <ApprovalQueue />}
+        {tab === 'compliance' && <CompliancePage />}
+        {tab === 'runs'       && <RunsHistory runs={runs} onViewRun={handleViewRun} onDeleted={refreshRuns} />}
       </main>
     </div>
   )

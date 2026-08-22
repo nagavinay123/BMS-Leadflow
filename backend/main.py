@@ -60,6 +60,22 @@ from database import (
     save_website_audit,
     update_company_score,
     update_company_status,
+    get_campaigns,
+    create_campaign,
+    update_campaign,
+    get_campaign,
+    get_campaign_stats,
+    add_campaign_member,
+    update_campaign_member,
+    get_campaign_members,
+    get_contacts_for_company,
+    record_event,
+    get_events,
+    get_due_follow_ups,
+    cancel_follow_ups_for_member,
+    get_budget_this_month,
+    log_budget,
+    migrate_contacts_from_companies,
 )
 
 app = FastAPI(
@@ -83,8 +99,19 @@ app.add_middleware(
 class SearchRequest(BaseModel):
     business_type: str  = Field(..., min_length=2)
     town:          str  = Field(..., min_length=2)
-    max_results:   int  = Field(50, ge=1, le=60)
+    max_results:   int  = Field(50, ge=1, le=10000)
     skip_audit:    bool = Field(False)
+
+
+class BulkSearchItem(BaseModel):
+    business_type: str
+    town:          str
+    max_results:   int = Field(50, ge=1, le=500)
+
+class BulkSearchRequest(BaseModel):
+    searches:    list[BulkSearchItem]
+    skip_audit:  bool = Field(False)
+    icp_id:      Optional[str] = None
 
 class AuditRequest(BaseModel):
     run_id: Optional[str] = None
@@ -406,5 +433,443 @@ def add_suppression(entry: SuppressionEntry):
     try:
         add_to_suppression(entry.model_dump(exclude_none=True))
         return {"status": "added"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Bulk Discovery
+# ──────────────────────────────────────────────
+
+@app.post("/api/bulk-search")
+def bulk_search(request: BulkSearchRequest):
+    """
+    Run multiple discovery searches sequentially.
+    Deduplication handled by Supabase upsert on google_place_id / company_number / domain.
+    """
+    results = []
+    errors  = []
+    total_stored      = 0
+    total_outreach    = 0
+
+    for item in request.searches:
+        try:
+            result = run_discovery(
+                business_type = item.business_type.strip(),
+                town          = item.town.strip(),
+                max_results   = item.max_results,
+                skip_audit    = request.skip_audit,
+            )
+            total_stored   += result.get("stored", 0)
+            total_outreach += result.get("outreach_ready", 0)
+            results.append({
+                "business_type": item.business_type,
+                "town":          item.town,
+                "stored":        result.get("stored", 0),
+                "outreach_ready":result.get("outreach_ready", 0),
+                "run_id":        result.get("run_id"),
+            })
+        except Exception as e:
+            errors.append({
+                "business_type": item.business_type,
+                "town":          item.town,
+                "error":         str(e),
+            })
+
+    return {
+        "total_searches":   len(request.searches),
+        "successful":       len(results),
+        "failed":           len(errors),
+        "total_stored":     total_stored,
+        "total_outreach_ready": total_outreach,
+        "results":          results,
+        "errors":           errors,
+    }
+
+
+# ──────────────────────────────────────────────
+# Email Verification (MillionVerifier)
+# ──────────────────────────────────────────────
+
+class VerifyEmailRequest(BaseModel):
+    email: str
+
+@app.post("/api/verify-email")
+def verify_single_email(request: VerifyEmailRequest):
+    try:
+        from email_verify import verify_email
+        return verify_email(request.email)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/verify-email/company/{company_id}")
+def verify_company_email(company_id: str):
+    try:
+        from email_verify import verify_email, should_send
+        from database import supabase as db
+        from datetime import datetime, timezone
+        rows = db.table("companies").select("contact_email").eq("id", company_id).limit(1).execute().data
+        if not rows or not rows[0].get("contact_email"):
+            raise HTTPException(status_code=404, detail="No contact email for this company")
+        email  = rows[0]["contact_email"]
+        result = verify_email(email)
+        # Update contacts table
+        from database import upsert_contact
+        upsert_contact({
+            "company_id":     company_id,
+            "email":          email,
+            "email_status":   result["email_status"],
+            "email_verified_at": datetime.now(timezone.utc).isoformat() if result["can_send"] else None,
+        })
+        # Also update companies.email_verified
+        db.table("companies").update({
+            "email_verified": result["can_send"],
+        }).eq("id", company_id).execute()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/migrate-contacts")
+def run_contact_migration():
+    """One-time migration: copy contact data from companies into contacts table."""
+    try:
+        migrated = migrate_contacts_from_companies()
+        return {"status": "ok", "migrated": migrated}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/contacts/{company_id}")
+def list_contacts(company_id: str):
+    try:
+        return get_contacts_for_company(company_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Campaigns
+# ──────────────────────────────────────────────
+
+class CampaignRequest(BaseModel):
+    name:          str
+    description:   Optional[str] = ""
+    icp_id:        Optional[str] = None
+    sender_name:   str           = "James"
+    sender_email:  Optional[str] = None
+    reply_to_email:Optional[str] = None
+    daily_limit:   int           = Field(25, ge=1, le=100)
+    weekly_budget: float         = 0.0
+    dry_run:       bool          = True   # Always default to dry run — safety
+
+class CampaignStatusUpdate(BaseModel):
+    status: str  # draft | active | paused | completed | cancelled
+
+class AddMembersRequest(BaseModel):
+    company_ids:   list[str]
+    contact_id:    Optional[str] = None
+
+@app.get("/api/campaigns")
+def list_campaigns(status: Optional[str] = None):
+    try:
+        return get_campaigns(status=status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/campaigns")
+def create_new_campaign(request: CampaignRequest):
+    try:
+        data = request.model_dump()
+        return create_campaign(data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/campaigns/{campaign_id}")
+def get_campaign_detail(campaign_id: str):
+    try:
+        c = get_campaign(campaign_id)
+        if not c:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        c["stats"] = get_campaign_stats(campaign_id)
+        return c
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/campaigns/{campaign_id}/status")
+def update_campaign_status_endpoint(campaign_id: str, request: CampaignStatusUpdate):
+    valid = {"draft","active","paused","completed","cancelled"}
+    if request.status not in valid:
+        raise HTTPException(status_code=400, detail=f"Status must be one of {valid}")
+    try:
+        update_campaign(campaign_id, {"status": request.status})
+        return {"status": request.status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/campaigns/{campaign_id}/members")
+def add_campaign_members(campaign_id: str, request: AddMembersRequest):
+    try:
+        added = 0
+        for company_id in request.company_ids:
+            add_campaign_member({
+                "campaign_id": campaign_id,
+                "company_id":  company_id,
+                "contact_id":  request.contact_id,
+                "status":      "queued",
+            })
+            added += 1
+        return {"added": added}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/campaigns/{campaign_id}/members")
+def list_campaign_members_endpoint(campaign_id: str, status: Optional[str] = None):
+    try:
+        return get_campaign_members(campaign_id, status=status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/campaigns/{campaign_id}/stats")
+def campaign_stats_endpoint(campaign_id: str):
+    try:
+        return get_campaign_stats(campaign_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Events
+# ──────────────────────────────────────────────
+
+@app.get("/api/events")
+def list_events_endpoint(campaign_id: Optional[str] = None, event_type: Optional[str] = None, limit: int = 200):
+    try:
+        return get_events(campaign_id=campaign_id, event_type=event_type, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Budget
+# ──────────────────────────────────────────────
+
+@app.get("/api/budget")
+def budget_summary():
+    try:
+        return {
+            "month_to_date_gbp": get_budget_this_month(),
+            "limit_gbp":         100.0,
+            "remaining_gbp":     round(100.0 - get_budget_this_month(), 2),
+            "detail":            get_monthly_budget_summary_safe(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def get_monthly_budget_summary_safe():
+    try:
+        from database import get_monthly_budget_summary
+        return get_monthly_budget_summary()
+    except Exception:
+        return []
+
+
+# ──────────────────────────────────────────────
+# AI Personalisation
+# ──────────────────────────────────────────────
+
+class PersonaliseRequest(BaseModel):
+    company_id:  str
+    draft_id:    Optional[str] = None
+    sender_name: str = "James"
+
+@app.post("/api/personalise/{company_id}")
+def personalise_email(company_id: str, request: PersonaliseRequest):
+    try:
+        from claude_personalise import personalise_email as claude_personalise
+        from database import supabase as db
+        rows = db.table("companies").select("*, website_audits(*)").eq("id", company_id).limit(1).execute().data
+        if not rows:
+            raise HTTPException(status_code=404, detail="Company not found")
+        from database import _merge_audit
+        company = _merge_audit(rows[0])
+        result  = claude_personalise(company)
+        # Persist to email_drafts if draft_id provided
+        if request.draft_id and result.get("opening_line"):
+            from datetime import datetime, timezone
+            db.table("email_drafts").update({
+                "ai_opening":      result["opening_line"],
+                "ai_model":        result.get("model"),
+                "ai_generated_at": datetime.now(timezone.utc).isoformat(),
+                "approval_status": "pending",
+            }).eq("id", request.draft_id).execute()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Approval Queue
+# ──────────────────────────────────────────────
+
+class ApprovalDecision(BaseModel):
+    decision:         str   # 'approved' | 'rejected'
+    rejection_reason: Optional[str] = None
+    approved_by:      str = "James"
+    edited_opening:   Optional[str] = None
+
+@app.get("/api/approval-queue")
+def get_approval_queue(limit: int = 100):
+    """Return email drafts pending AI copy review."""
+    try:
+        from database import supabase as db
+        rows = (
+            db.table("email_drafts")
+            .select("*, companies(name, domain, contact_full_name, score, icp_match)")
+            .eq("approval_status", "pending")
+            .not_.is_("ai_opening", "null")
+            .order("generated_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data or []
+        )
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/approval-queue/{draft_id}")
+def decide_draft(draft_id: str, request: ApprovalDecision):
+    if request.decision not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
+    try:
+        from database import supabase as db
+        from datetime import datetime, timezone
+        update_data = {
+            "approval_status":   request.decision,
+            "approved_by":       request.approved_by,
+            "approved_at":       datetime.now(timezone.utc).isoformat(),
+            "rejection_reason":  request.rejection_reason,
+        }
+        if request.edited_opening:
+            update_data["ai_opening"] = request.edited_opening
+        db.table("email_drafts").update(update_data).eq("id", draft_id).execute()
+        # Log to decisions_log
+        db.table("decisions_log").insert({
+            "decision":           f"AI copy {request.decision}: draft {draft_id}",
+            "options_considered": f"Original AI opening reviewed",
+            "made_by":            request.approved_by,
+        }).execute()
+        return {"status": request.decision}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Webhook (email events from Smartlead / Instantly)
+# ──────────────────────────────────────────────
+
+@app.post("/api/webhook/email")
+async def email_webhook(request_body: dict):
+    """
+    Receive email events from Smartlead / Instantly.
+    Processes: sent, open, click, reply, bounce, unsubscribe.
+    Idempotent: duplicate provider_event_id is ignored.
+    """
+    try:
+        from campaign_engine import process_webhook_event
+        result = process_webhook_event(request_body)
+        return {"status": "ok", "processed": result}
+    except Exception as e:
+        import logging
+        logging.error("Webhook processing error: %s | payload: %s", e, request_body)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Compliance
+# ──────────────────────────────────────────────
+
+@app.get("/api/compliance/checklist")
+def compliance_checklist():
+    """
+    Backwards-compatible checklist endpoint.
+    Delegates to /api/production-readiness and converts to legacy gate format.
+    """
+    from production_readiness import check_production_readiness
+    pr = check_production_readiness()
+    gates = []
+    for check_id, c in pr["checks"].items():
+        gates.append({
+            "id":      check_id,
+            "label":   c["label"],
+            "ok":      c["status"] == "READY",
+            "status":  c["status"],
+            "detail":  c["detail"],
+            "action":  c["action_required"],
+            "who":     c["who_must_act"],
+            "mandatory": c.get("mandatory", True),
+            "can_claude_verify": c["can_claude_verify"],
+        })
+    return {
+        "ready_for_live_sending": pr["ready_for_live_sending"],
+        "dry_run_active":         pr["dry_run_active"],
+        "gates":                  gates,
+        "blockers":               pr["blockers"],
+        "note":                   pr["note"],
+    }
+
+
+@app.get("/api/production-readiness")
+def production_readiness(probe: bool = False):
+    """
+    Full production readiness check.
+    Returns ready_for_live_sending=true ONLY when ALL mandatory gates pass.
+
+    Query param ?probe=true will attempt to authenticate with Smartlead API
+    (read-only — no email sent) to verify credentials are valid.
+    """
+    from production_readiness import check_production_readiness
+    return check_production_readiness(probe_sending_platform=probe)
+
+
+# ──────────────────────────────────────────────
+# Follow-ups (manual trigger for testing)
+# ──────────────────────────────────────────────
+
+@app.post("/api/process-follow-ups")
+def trigger_follow_ups():
+    try:
+        from campaign_engine import process_due_follow_ups
+        result = process_due_follow_ups()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/send/{campaign_member_id}")
+def send_email_endpoint(campaign_member_id: str):
+    """
+    Attempt to send the email for a specific campaign member.
+    In DRY_RUN mode, simulates the send without contacting any real email provider.
+    """
+    try:
+        from campaign_engine import send_campaign_email
+        result = send_campaign_email(campaign_member_id)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

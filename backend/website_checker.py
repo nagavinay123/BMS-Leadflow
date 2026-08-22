@@ -96,15 +96,28 @@ def audit_website(domain: str, website_url: str = None) -> dict:
         result["error"] = f"HTML parse error: {e}"
         # Don't return — PageSpeed can still run
 
-    # ── Step 3: Response-time speed score (no API needed) ──
-    speed_score = _response_time_score(url)
+    # ── Step 3: Performance scoring ────────────────────────────
+    pagespeed_key = os.getenv("GOOGLE_PAGESPEED_KEY", "").strip()
+    soup_obj = soup if 'soup' in dir() else None
+
+    if pagespeed_key:
+        # Use real Google PageSpeed Insights API
+        desktop_score = _pagespeed_score(url, "desktop",  pagespeed_key)
+        mobile_score  = _pagespeed_score(url, "mobile",   pagespeed_key)
+        result["performance_score"] = desktop_score
+        result["mobile_score"]      = mobile_score
+        result["audit_source"]      = "pagespeed"
+        print(f"  [PageSpeed] desktop={desktop_score} mobile={mobile_score}")
+    else:
+        # Fallback: response-time proxy. Clearly flagged as NOT PageSpeed.
+        speed_score = _response_time_score(url)
+        result["performance_score"] = speed_score
+        result["mobile_score"]      = None   # explicitly None — no mobile data without API key
+        result["audit_source"]      = "response_time"
+        print(f"  [Speed proxy] score={speed_score} (GOOGLE_PAGESPEED_KEY not set)")
     time.sleep(DELAY_BETWEEN)
 
-    result["performance_score"] = speed_score
-    result["mobile_score"]      = speed_score   # same proxy — no mobile API
-
     # ── Step 3b: Scrape email + social links from homepage ───
-    soup_obj = soup if 'soup' in dir() else None
     result["scraped_email"]  = _scrape_email(url, soup_obj)
     instagram, facebook = _scrape_social(soup_obj)
     result["instagram_url"]  = instagram
@@ -112,16 +125,22 @@ def audit_website(domain: str, website_url: str = None) -> dict:
 
     # ── Step 4: Build issues list (for personalisation) ─────
     issues = []
+    perf  = result["performance_score"]
+    mob   = result["mobile_score"]
 
     if not result["https"]:
         issues.append({"type": "no_ssl", "label": "No HTTPS / SSL certificate"})
 
-    if speed_score is not None and speed_score < 40:
+    if perf is not None and perf < 40:
         issues.append({"type": "poor_performance",
-                       "label": f"Website very slow to load (score {speed_score}/100)"})
-    elif speed_score is not None and speed_score < 65:
+                       "label": f"Website very slow to load (desktop score {perf}/100)"})
+    elif perf is not None and perf < 65:
         issues.append({"type": "slow_desktop",
-                       "label": f"Website slow to load (score {speed_score}/100)"})
+                       "label": f"Website slow to load (desktop score {perf}/100)"})
+
+    if mob is not None and mob < 50:
+        issues.append({"type": "poor_mobile",
+                       "label": f"Poor mobile performance (mobile score {mob}/100)"})
 
     if not result["has_viewport"]:
         issues.append({"type": "no_viewport",
@@ -135,6 +154,36 @@ def audit_website(domain: str, website_url: str = None) -> dict:
 
     result["issues"] = issues
     return result
+
+
+# ──────────────────────────────────────────────
+# Google PageSpeed Insights (real API)
+# ──────────────────────────────────────────────
+
+PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+
+def _pagespeed_score(url: str, strategy: str, api_key: str) -> int | None:
+    """
+    Call Google PageSpeed Insights API and return the performance score (0–100).
+    strategy: 'desktop' | 'mobile'
+    Returns None on error.
+    """
+    try:
+        resp = requests.get(
+            PAGESPEED_URL,
+            params={"url": url, "strategy": strategy, "key": api_key},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        score = data.get("lighthouseResult", {}) \
+                    .get("categories", {}) \
+                    .get("performance", {}) \
+                    .get("score")
+        return int(score * 100) if score is not None else None
+    except Exception as e:
+        print(f"  [PageSpeed] {strategy} API error: {e}")
+        return None
 
 
 # ──────────────────────────────────────────────

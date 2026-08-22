@@ -46,7 +46,9 @@ from database import (
     save_website_audit,
     is_suppressed,
     get_companies,
+    upsert_contact,
 )
+from email_verify import verify_email, mv_available, should_send
 
 
 # ──────────────────────────────────────────────
@@ -181,16 +183,52 @@ def run_discovery(
                     director["last_name"],
                 )
                 if email_result.get("email"):
-                    record["contact_email"]          = email_result["email"]
-                    record["email_confidence"]       = email_result["confidence"]
-                    record["email_verified"]         = email_result["verified"]
-                    print(f"         📧 Email: {email_result['email']} ({email_result['confidence']}%)")
+                    found_email  = email_result["email"]
+                    confidence   = email_result["confidence"]
+
+                    # ── MillionVerifier verification ─────────────
+                    if mv_available():
+                        mv_result   = verify_email(found_email)
+                        email_status = mv_result["email_status"]
+                        email_verified = mv_result["can_send"]
+                        print(f"         📧 Email: {found_email} → {email_status} (MV)")
+                    else:
+                        # Hunter confidence >= 80 as fallback (NOT spec-compliant — use MV in prod)
+                        email_status   = "unverified"
+                        email_verified = False
+                        print(f"         📧 Email: {found_email} ({confidence}%) [MV key missing]")
+
+                    record["contact_email"]    = found_email
+                    record["email_confidence"] = confidence
+                    record["email_verified"]   = email_verified
+                    record["_email_status"]    = email_status  # internal, stripped before DB insert
 
         try:
+            # Strip internal-only fields before DB insert
+            email_status = record.pop("_email_status", "unverified")
+
             stored = insert_company(record)
-            record["id"] = stored.get("id")
+            company_id = stored.get("id")
+            record["id"] = company_id
             stored_companies.append(record)
             stats["stored"] += 1
+
+            # ── Write to contacts table ──────────────────────
+            if company_id and record.get("contact_email"):
+                from datetime import datetime, timezone
+                upsert_contact({
+                    "company_id":     company_id,
+                    "email":          record["contact_email"],
+                    "first_name":     record.get("contact_first_name"),
+                    "last_name":      record.get("contact_last_name"),
+                    "full_name":      record.get("contact_full_name"),
+                    "role":           record.get("contact_role"),
+                    "email_status":   email_status,
+                    "email_confidence": record.get("email_confidence"),
+                    "email_verified_at": datetime.now(timezone.utc).isoformat() if record.get("email_verified") else None,
+                    "source":         "companies_house",
+                    "is_primary":     True,
+                })
         except Exception as e:
             print(f"  ⚠️  Store failed for {name}: {e}")
 
@@ -327,7 +365,7 @@ if __name__ == "__main__":
         run_discovery(
             business_type = args.business_type,
             town          = args.town,
-            max_results   = min(args.max_results, 60),
+            max_results   = args.max_results,
             skip_audit    = args.skip_audit,
         )
     except Exception as e:

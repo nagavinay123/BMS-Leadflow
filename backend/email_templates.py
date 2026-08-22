@@ -196,6 +196,64 @@ def _build_body(
 
 
 # ──────────────────────────────────────────────
+# Follow-up email generator (Steps 2 + 3)
+# ──────────────────────────────────────────────
+
+def generate_followup_email(company: dict, step: int = 2, sender_name: str = "James") -> dict:
+    """
+    Generate a follow-up email for a company (step 2 or 3 in the sequence).
+    Steps are shorter, reference the original email, and have a different CTA.
+    """
+    biz_name   = company.get("name", "your business")
+    first_name = company.get("contact_first_name") or (company.get("contact_full_name") or "").split()[0]
+    greeting   = f"Hi {first_name}," if first_name else "Hi there,"
+
+    if step == 2:
+        subject = f"Re: A few things we noticed about {biz_name}"
+        body    = "\n".join([
+            greeting,
+            "",
+            "Just following up on my email from a few days ago — I wanted to make sure it didn't get lost.",
+            "",
+            f"We noticed a few things on {biz_name}'s website that are likely costing you customers "
+            f"— I'd love to walk you through them on a quick 15-minute call.",
+            "",
+            "There's no obligation at all — just a short, practical conversation about what we found and what's possible.",
+            "",
+            "Does this week or next work for you?",
+            "",
+            f"Best,",
+            f"{sender_name}",
+            "BeMySocial | bemysocial.co.uk",
+        ])
+    else:
+        subject = f"Last note re: {biz_name}'s online presence"
+        body    = "\n".join([
+            greeting,
+            "",
+            "I'll keep this short — this will be my final email.",
+            "",
+            f"We carried out a quick audit of {biz_name}'s website and found a few things that "
+            f"could genuinely affect how many customers find you online.",
+            "",
+            "If you'd like to see the results and get some free advice on what to improve, "
+            "just hit reply and say 'yes' — takes 15 minutes.",
+            "",
+            "If now's not the right time, no worries at all — I wish you every success.",
+            "",
+            f"Best,",
+            f"{sender_name}",
+            "BeMySocial | bemysocial.co.uk",
+        ])
+
+    return {
+        "subject":       subject,
+        "body":          body,
+        "template_used": f"follow_up_step_{step}_v1",
+    }
+
+
+# ──────────────────────────────────────────────
 # Batch generate for a list of companies
 # ──────────────────────────────────────────────
 

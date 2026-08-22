@@ -225,3 +225,230 @@ def get_suppression_list(limit: int = 500) -> list:
         .execute()
         .data or []
     )
+
+
+# ──────────────────────────────────────────────
+# Contacts
+# ──────────────────────────────────────────────
+
+def upsert_contact(data: dict) -> dict:
+    """
+    Insert or update a contact. Uses (company_id, email) as upsert key.
+    Falls back to insert if email is missing.
+    """
+    if data.get("email") and data.get("company_id"):
+        res = (
+            supabase.table("contacts")
+            .upsert(data, on_conflict="company_id,email")
+            .execute()
+        )
+    else:
+        res = supabase.table("contacts").insert(data).execute()
+    return res.data[0] if res.data else {}
+
+
+def get_contacts_for_company(company_id: str) -> list:
+    return (
+        supabase.table("contacts")
+        .select("*")
+        .eq("company_id", company_id)
+        .order("is_primary", desc=True)
+        .execute()
+        .data or []
+    )
+
+
+def update_contact_verification(contact_id: str, email_status: str, verified_at=None):
+    from datetime import datetime, timezone
+    supabase.table("contacts").update({
+        "email_status":      email_status,
+        "email_verified_at": verified_at or datetime.now(timezone.utc).isoformat(),
+    }).eq("id", contact_id).execute()
+
+
+def migrate_contacts_from_companies():
+    """
+    One-time migration: move contact data from companies.contact_* columns
+    into the contacts table.  Safe to run multiple times.
+    """
+    rows = (
+        supabase.table("companies")
+        .select("id, contact_email, contact_first_name, contact_last_name,"
+                " contact_full_name, contact_role, email_verified, email_confidence")
+        .not_.is_("contact_email", "null")
+        .execute()
+        .data or []
+    )
+    migrated = 0
+    for row in rows:
+        contact = {
+            "company_id":     row["id"],
+            "email":          row["contact_email"],
+            "first_name":     row.get("contact_first_name"),
+            "last_name":      row.get("contact_last_name"),
+            "full_name":      row.get("contact_full_name"),
+            "role":           row.get("contact_role"),
+            "email_status":   "good" if row.get("email_verified") else "unverified",
+            "email_confidence": row.get("email_confidence"),
+            "source":         "companies_house",
+            "is_primary":     True,
+        }
+        upsert_contact(contact)
+        migrated += 1
+    return migrated
+
+
+# ──────────────────────────────────────────────
+# Campaigns
+# ──────────────────────────────────────────────
+
+def get_campaigns(status: str = None, limit: int = 50) -> list:
+    q = supabase.table("campaigns").select("*")
+    if status:
+        q = q.eq("status", status)
+    return q.order("created_at", desc=True).limit(limit).execute().data or []
+
+
+def create_campaign(data: dict) -> dict:
+    res = supabase.table("campaigns").insert(data).execute()
+    return res.data[0] if res.data else {}
+
+
+def update_campaign(campaign_id: str, data: dict):
+    supabase.table("campaigns").update(data).eq("id", campaign_id).execute()
+
+
+def get_campaign(campaign_id: str) -> dict:
+    res = supabase.table("campaigns").select("*").eq("id", campaign_id).limit(1).execute()
+    return res.data[0] if res.data else {}
+
+
+def get_campaign_stats(campaign_id: str) -> dict:
+    from supabase import PostgrestAPIError
+    try:
+        res = supabase.rpc("v_campaign_stats_fn", {}).eq("id", campaign_id).execute()
+        return res.data[0] if res.data else {}
+    except Exception:
+        # Fallback: manual count
+        members = supabase.table("campaign_members").select("status").eq("campaign_id", campaign_id).execute().data or []
+        events  = supabase.table("events").select("event_type").eq("campaign_id", campaign_id).execute().data or []
+        def count(lst, key, val): return sum(1 for x in lst if x.get(key) == val)
+        return {
+            "member_count":     len(members),
+            "sent":             count(members, "status", "sent"),
+            "opens":            count(events,  "event_type", "open"),
+            "clicks":           count(events,  "event_type", "click"),
+            "replies":          count(events,  "event_type", "reply"),
+            "bounces":          count(events,  "event_type", "bounce"),
+            "unsubscribes":     count(events,  "event_type", "unsubscribe"),
+        }
+
+
+# ──────────────────────────────────────────────
+# Campaign Members
+# ──────────────────────────────────────────────
+
+def add_campaign_member(data: dict) -> dict:
+    res = supabase.table("campaign_members").upsert(
+        data, on_conflict="campaign_id,company_id"
+    ).execute()
+    return res.data[0] if res.data else {}
+
+
+def update_campaign_member(member_id: str, data: dict):
+    supabase.table("campaign_members").update(data).eq("id", member_id).execute()
+
+
+def get_campaign_members(campaign_id: str, status: str = None, limit: int = 500) -> list:
+    q = supabase.table("campaign_members").select("*, companies(*), contacts(*)").eq("campaign_id", campaign_id)
+    if status:
+        q = q.eq("status", status)
+    return q.order("queued_at").limit(limit).execute().data or []
+
+
+def get_due_follow_ups(limit: int = 100) -> list:
+    """Return follow-ups that are due now and not yet cancelled/sent."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return (
+        supabase.table("follow_ups")
+        .select("*, campaign_members(*, companies(*, contacts(*)))")
+        .eq("status", "scheduled")
+        .lte("scheduled_at", now_iso)
+        .limit(limit)
+        .execute()
+        .data or []
+    )
+
+
+def cancel_follow_ups_for_member(member_id: str, reason: str):
+    from datetime import datetime, timezone
+    supabase.table("follow_ups").update({
+        "status":       "cancelled",
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
+        "cancel_reason": reason,
+    }).eq("campaign_member_id", member_id).eq("status", "scheduled").execute()
+
+
+# ──────────────────────────────────────────────
+# Events
+# ──────────────────────────────────────────────
+
+def record_event(data: dict) -> dict:
+    """Insert an event. Skips if provider_event_id already seen (idempotent)."""
+    if data.get("provider_event_id"):
+        existing = (
+            supabase.table("events")
+            .select("id")
+            .eq("provider_event_id", data["provider_event_id"])
+            .execute()
+            .data
+        )
+        if existing:
+            return existing[0]
+    res = supabase.table("events").insert(data).execute()
+    return res.data[0] if res.data else {}
+
+
+def get_events(campaign_id: str = None, event_type: str = None, limit: int = 500) -> list:
+    q = supabase.table("events").select("*")
+    if campaign_id:
+        q = q.eq("campaign_id", campaign_id)
+    if event_type:
+        q = q.eq("event_type", event_type)
+    return q.order("occurred_at", desc=True).limit(limit).execute().data or []
+
+
+# ──────────────────────────────────────────────
+# Budget Log
+# ──────────────────────────────────────────────
+
+def log_budget(provider: str, amount: float, description: str = "",
+               campaign_id: str = None, currency: str = "GBP"):
+    supabase.table("budget_log").insert({
+        "provider":    provider,
+        "amount":      amount,
+        "currency":    currency,
+        "description": description,
+        "campaign_id": campaign_id,
+    }).execute()
+
+
+def get_monthly_budget_summary() -> list:
+    try:
+        return supabase.table("v_monthly_budget").select("*").execute().data or []
+    except Exception:
+        return []
+
+
+def get_budget_this_month() -> float:
+    from datetime import datetime, timezone
+    month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    rows = (
+        supabase.table("budget_log")
+        .select("amount")
+        .gte("occurred_at", month_start.isoformat())
+        .execute()
+        .data or []
+    )
+    return round(sum(r["amount"] for r in rows), 2)
