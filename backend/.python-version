@@ -1,4 +1,5 @@
 cd leadflow
-git add backend/.python-version
-git commit -m "Pin Python 3.12 for Railway (pydantic-core PyO3 compat)"
+git rm backend/.python-version
+git add backend/nixpacks.toml
+git commit -m "Fix Railway: pin Python 3.12 via nixpacks.toml"
 git push origin main
