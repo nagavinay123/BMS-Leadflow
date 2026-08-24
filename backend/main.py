@@ -39,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 
+from activity_logger import log_activity
 from pipeline        import run_discovery
 from website_checker import audit_companies
 from scoring         import calculate_score
@@ -167,6 +168,12 @@ def search(request: SearchRequest):
             max_results   = request.max_results,
             skip_audit    = request.skip_audit,
         )
+        log_activity("search", {
+            "business_type": request.business_type,
+            "town": request.town,
+            "max_results": request.max_results,
+            "companies_found": len(result.get("companies", [])),
+        }, user_email=request.user_email if hasattr(request, "user_email") else None)
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -832,6 +839,32 @@ def compliance_checklist():
         "blockers":               pr["blockers"],
         "note":                   pr["note"],
     }
+
+
+@app.get("/api/activity")
+def get_activity(limit: int = 50):
+    """Return recent activity log entries."""
+    try:
+        db = get_supabase()
+        result = db.table("activity_log") \
+            .select("*") \
+            .order("created_at", desc=True) \
+            .limit(limit) \
+            .execute()
+        return result.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/activity")
+def post_activity(payload: dict):
+    """Log a client-side action (e.g. login, status change)."""
+    log_activity(
+        action=payload.get("action", "unknown"),
+        details=payload.get("details", {}),
+        user_email=payload.get("user_email"),
+    )
+    return {"ok": True}
 
 
 @app.get("/api/production-readiness")

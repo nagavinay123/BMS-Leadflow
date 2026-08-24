@@ -11,6 +11,7 @@ import ICPProfiles     from './components/ICPProfiles.jsx'
 import CampaignMonitor from './components/CampaignMonitor.jsx'
 import ApprovalQueue   from './components/ApprovalQueue.jsx'
 import CompliancePage  from './components/CompliancePage.jsx'
+import ActivityLog     from './components/ActivityLog.jsx'
 import LoginPage, { ConfigWarning } from './components/LoginPage.jsx'
 import bmsLogo from './bms-logo.png'
 
@@ -46,6 +47,7 @@ const TABS = [
   { id: 'analytics',  label: '📈 Analytics'  },
   { id: 'icp',        label: '🎯 ICP'        },
   { id: 'compliance', label: '⚖️ Compliance' },
+  { id: 'activity',   label: '🕐 Activity'   },
   { id: 'runs',       label: '📋 History'    },
 ]
 
@@ -78,8 +80,15 @@ export default function App() {
     })
 
     // Listen for sign-in / sign-out / token refresh
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession)
+      if (event === 'SIGNED_IN' && newSession?.user?.email) {
+        fetch('/api/activity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'login', user_email: newSession.user.email }),
+        }).catch(() => {})
+      }
     })
 
     return () => subscription.unsubscribe()
@@ -143,6 +152,11 @@ export default function App() {
   }
 
   async function handleLogout() {
+    fetch('/api/activity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'logout', user_email: session?.user?.email }),
+    }).catch(() => {})
     if (supabase) await supabase.auth.signOut()
     setSession(null)
   }
@@ -276,6 +290,7 @@ export default function App() {
         {tab === 'campaigns'  && <CampaignMonitor />}
         {tab === 'approval'   && <ApprovalQueue />}
         {tab === 'compliance' && <CompliancePage />}
+        {tab === 'activity'   && <ActivityLog userEmail={userEmail} />}
         {tab === 'runs'       && <RunsHistory runs={runs} onViewRun={handleViewRun} onDeleted={refreshRuns} />}
       </main>
     </div>
