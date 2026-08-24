@@ -1,5 +1,0 @@
-cd leadflow
-git rm backend/.python-version
-git add backend/nixpacks.toml
-git commit -m "Fix Railway: pin Python 3.12 via nixpacks.toml"
-git push origin main

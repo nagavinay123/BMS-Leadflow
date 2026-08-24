@@ -1,0 +1,4 @@
+cd leadflow
+git add -A
+git commit -m "Remove .python-version, add nixpacks.toml for Python 3.12"
+git push origin main
