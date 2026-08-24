@@ -4,7 +4,7 @@ All calls are fire-and-forget; errors are logged but never raised.
 """
 
 import logging
-from database import get_supabase
+from database import supabase as db
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 def log_activity(action: str, details: dict = None, user_email: str = None):
     """Log an action to activity_log. Safe to call anywhere — never raises."""
     try:
-        db = get_supabase()
         db.table("activity_log").insert({
             "action":     action,
             "details":    details or {},

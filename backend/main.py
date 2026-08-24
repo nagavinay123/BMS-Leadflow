@@ -50,6 +50,7 @@ from outreach        import (
     get_pipeline_analytics,
 )
 from icp_profiles    import get_all_profiles, create_profile, update_profile, delete_profile, seed_default_profiles
+from database import supabase as _db
 from database import (
     get_companies,
     get_discovery_runs,
@@ -845,8 +846,7 @@ def compliance_checklist():
 def get_activity(limit: int = 50):
     """Return recent activity log entries."""
     try:
-        db = get_supabase()
-        result = db.table("activity_log") \
+        result = _db.table("activity_log") \
             .select("*") \
             .order("created_at", desc=True) \
             .limit(limit) \
