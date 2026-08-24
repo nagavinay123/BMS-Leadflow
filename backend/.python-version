@@ -1,0 +1,4 @@
+cd leadflow
+git add backend/.python-version
+git commit -m "Pin Python 3.12 for Railway (pydantic-core PyO3 compat)"
+git push origin main
