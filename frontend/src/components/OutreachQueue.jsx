@@ -1,24 +1,28 @@
 import { useState, useEffect } from 'react'
 import EmailComposer from './EmailComposer.jsx'
 
+const CALENDLY_URL = 'https://calendly.com/james-bemysocial/30min'
+
 const STATUS_COLOURS = {
-  none:        'badge-gray',
-  queued:      'badge-navy',
-  emailed:     'badge-amber',
-  replied:     'badge-green',
-  won:         'badge-green',
-  lost:        'badge-red',
-  suppressed:  'badge-red',
+  none:            'badge-gray',
+  queued:          'badge-navy',
+  emailed:         'badge-amber',
+  replied:         'badge-green',
+  meeting_booked:  'badge-purple',
+  won:             'badge-green',
+  lost:            'badge-red',
+  suppressed:      'badge-red',
 }
 
 const STATUS_LABELS = {
-  none:       '— Not queued',
-  queued:     '📋 Queued',
-  emailed:    '📧 Emailed',
-  replied:    '💬 Replied',
-  won:        '🏆 Won',
-  lost:       '✗ Lost',
-  suppressed: '🚫 Suppressed',
+  none:            '— Not queued',
+  queued:          '📋 Queued',
+  emailed:         '📧 Emailed',
+  replied:         '💬 Replied',
+  meeting_booked:  '📅 Meeting Booked',
+  won:             '🏆 Won',
+  lost:            '✗ Lost',
+  suppressed:      '🚫 Suppressed',
 }
 
 export default function OutreachQueue() {
@@ -76,6 +80,7 @@ export default function OutreachQueue() {
             { label: 'Queued',   value: stats.queued,      color: '#2563eb'      },
             { label: 'Emailed',  value: stats.emailed,     color: 'var(--amber)' },
             { label: 'Replied',  value: stats.replied,     color: '#7c3aed'      },
+            { label: 'Meeting',  value: stats.meeting_booked || 0, color: '#7c3aed' },
             { label: 'Won',      value: stats.won,         color: 'var(--green)' },
             { label: 'Lost',     value: stats.lost,        color: 'var(--red)'   },
           ].map((s, i) => (
@@ -95,7 +100,7 @@ export default function OutreachQueue() {
 
           {/* Filter tabs */}
           <div style={{ display: 'flex', gap: 6 }}>
-            {['all', 'none', 'queued', 'emailed', 'replied', 'won', 'lost'].map(s => (
+            {['all', 'none', 'queued', 'emailed', 'replied', 'meeting_booked', 'won', 'lost'].map(s => (
               <button
                 key={s}
                 className={`btn btn-secondary ${filter === s ? 'active-filter' : ''}`}
@@ -221,6 +226,35 @@ export default function OutreachQueue() {
                         )}
                         {c.outreach_status === 'replied' && (
                           <>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd', fontWeight: 700 }}
+                              onClick={() => {
+                                handleStatus(c.id, 'meeting_booked')
+                                window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name || '')}&email=${encodeURIComponent(c.contact_email || '')}`, '_blank')
+                              }}
+                            >
+                              📅 Book Meeting
+                            </button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
+                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>
+                              🏆 Won
+                            </button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
+                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>
+                              Lost ✗
+                            </button>
+                          </>
+                        )}
+                        {c.outreach_status === 'meeting_booked' && (
+                          <>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd' }}
+                              onClick={() => window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name || '')}&email=${encodeURIComponent(c.contact_email || '')}`, '_blank')}
+                            >
+                              📅 Calendly
+                            </button>
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
                               disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>
                               🏆 Won
