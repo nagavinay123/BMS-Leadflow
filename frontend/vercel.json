@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://bms-leadflow-production.up.railway.app/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://bms-leadflow-production.up.railway.app/health"
+    }
+  ]
+}
