@@ -12,15 +12,46 @@ const ACTION_ICONS = {
   default:        '📋',
 }
 
-function timeAgo(isoString) {
-  const diff = Date.now() - new Date(isoString).getTime()
-  const mins  = Math.floor(diff / 60000)
-  const hours = Math.floor(diff / 3600000)
-  const days  = Math.floor(diff / 86400000)
-  if (mins  < 1)   return 'just now'
-  if (mins  < 60)  return `${mins}m ago`
-  if (hours < 24)  return `${hours}h ago`
-  return `${days}d ago`
+function dayLabel(dateStr) {
+  const d     = new Date(dateStr)
+  const today = new Date()
+  const yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString())     return 'Today'
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function timeStr(isoString) {
+  return new Date(isoString).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+}
+
+function calDay(isoString) {
+  return new Date(isoString).toDateString()
+}
+
+function groupLogs(logs) {
+  const map = {}
+  for (const log of logs) {
+    const key = `${calDay(log.created_at)}||${log.user_email || ''}||${log.action}`
+    if (!map[key]) {
+      map[key] = {
+        key,
+        day:        calDay(log.created_at),
+        dayLabel:   dayLabel(log.created_at),
+        user_email: log.user_email,
+        action:     log.action,
+        count:      0,
+        latest:     log.created_at,
+        items:      [],
+      }
+    }
+    map[key].count++
+    map[key].items.push(log)
+    if (log.created_at > map[key].latest) map[key].latest = log.created_at
+  }
+  // Sort by latest desc
+  return Object.values(map).sort((a, b) => b.latest.localeCompare(a.latest))
 }
 
 function formatDetails(details) {
@@ -31,32 +62,36 @@ function formatDetails(details) {
 }
 
 export default function ActivityLog({ userEmail }) {
-  const [logs,    setLogs]    = useState([])
-  const [loading, setLoading] = useState(true)
-  const [filter,  setFilter]  = useState('all')
+  const [logs,     setLogs]     = useState([])
+  const [loading,  setLoading]  = useState(true)
+  const [filter,   setFilter]   = useState('all')
+  const [expanded, setExpanded] = useState({})
 
-  useEffect(() => {
-    loadLogs()
-  }, [])
+  useEffect(() => { loadLogs() }, [])
 
   async function loadLogs() {
     setLoading(true)
     try {
       const EXCLUDED = ['viewed_activity_log']
-      const data = await fetch('/api/activity?limit=200').then(r => r.json())
+      const data = await fetch('/api/activity?limit=500').then(r => r.json())
       setLogs(Array.isArray(data) ? data.filter(l => !EXCLUDED.includes(l.action)) : [])
     } catch {}
     setLoading(false)
   }
 
-  const actions = ['all', ...new Set(logs.map(l => l.action))]
+  function toggleExpand(key) {
+    setExpanded(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
   const filtered = filter === 'all' ? logs : logs.filter(l => l.action === filter)
+  const grouped  = groupLogs(filtered)
+  const actions  = ['all', ...new Set(logs.map(l => l.action))]
 
   return (
     <div>
       <div className="card" style={{ marginTop: 20 }}>
         <div className="card-header">
-          <span className="card-title">Activity Log — {filtered.length} entries</span>
+          <span className="card-title">Activity Log — {grouped.length} grouped entries</span>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {actions.map(a => (
               <button
@@ -79,7 +114,7 @@ export default function ActivityLog({ userEmail }) {
 
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--gray-400)' }}>Loading…</div>
-        ) : filtered.length === 0 ? (
+        ) : grouped.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--gray-400)' }}>
             No activity yet. Actions like searches, status changes, and logins will appear here.
           </div>
@@ -88,42 +123,82 @@ export default function ActivityLog({ userEmail }) {
             <table>
               <thead>
                 <tr>
-                  <th>When</th>
+                  <th>Day</th>
                   <th>User</th>
                   <th>Action</th>
-                  <th>Details</th>
+                  <th>Count</th>
+                  <th>Last seen</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(log => {
-                  const isLogin  = log.action === 'login'
-                  const isLogout = log.action === 'logout'
-                  const rowBg = isLogin  ? '#f0fdf4'
-                              : isLogout ? '#fef2f2'
-                              : 'transparent'
+                {grouped.map(g => {
+                  const isLogin  = g.action === 'login'
+                  const isLogout = g.action === 'logout'
+                  const rowBg    = isLogin ? '#f0fdf4' : isLogout ? '#fef2f2' : 'transparent'
+                  const isOpen   = expanded[g.key]
+
                   return (
-                    <tr key={log.id} style={{ background: rowBg }}>
-                      <td style={{ fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>
-                        {timeAgo(log.created_at)}
-                        <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                          {new Date(log.created_at).toLocaleString('en-GB')}
-                        </div>
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        {log.user_email
-                          ? <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 12, fontSize: 11 }}>{log.user_email}</span>
-                          : <span style={{ color: '#cbd5e1' }}>—</span>}
-                      </td>
-                      <td>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: isLogin || isLogout ? 700 : 600 }}>
-                          {ACTION_ICONS[log.action] || ACTION_ICONS.default}
-                          {log.action.replace(/_/g, ' ')}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: 12, color: '#64748b' }}>
-                        {formatDetails(log.details) || '—'}
-                      </td>
-                    </tr>
+                    <>
+                      <tr key={g.key} style={{ background: rowBg }}>
+                        <td style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap' }}>
+                          {g.dayLabel}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {g.user_email
+                            ? <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 12, fontSize: 11 }}>{g.user_email}</span>
+                            : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13,
+                            fontWeight: isLogin || isLogout ? 700 : 600 }}>
+                            {ACTION_ICONS[g.action] || ACTION_ICONS.default}
+                            {g.action.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{
+                            background: '#e0e7ff', color: '#3730a3',
+                            padding: '2px 10px', borderRadius: 12, fontSize: 12, fontWeight: 700
+                          }}>
+                            {g.count} {g.count === 1 ? 'time' : 'times'}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 12, color: '#64748b' }}>
+                          {timeStr(g.latest)}
+                        </td>
+                        <td>
+                          {g.count > 1 && (
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '2px 10px', fontSize: 11 }}
+                              onClick={() => toggleExpand(g.key)}
+                            >
+                              {isOpen ? '▲ Hide' : '▼ Show all'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+
+                      {/* Expanded individual events */}
+                      {isOpen && g.items
+                        .slice().sort((a, b) => b.created_at.localeCompare(a.created_at))
+                        .map(log => (
+                          <tr key={log.id} style={{ background: isLogin ? '#f7fef9' : isLogout ? '#fff7f7' : '#f8fafc' }}>
+                            <td style={{ fontSize: 11, color: '#94a3b8', paddingLeft: 24 }}>
+                              ↳ {new Date(log.created_at).toLocaleString('en-GB')}
+                            </td>
+                            <td style={{ fontSize: 11, color: '#94a3b8' }}>{log.user_email || '—'}</td>
+                            <td style={{ fontSize: 11, color: '#64748b' }}>
+                              {ACTION_ICONS[log.action] || ACTION_ICONS.default} {log.action.replace(/_/g, ' ')}
+                            </td>
+                            <td colSpan={3} style={{ fontSize: 11, color: '#94a3b8' }}>
+                              {formatDetails(log.details) || '—'}
+                            </td>
+                          </tr>
+                        ))
+                      }
+                    </>
                   )
                 })}
               </tbody>
