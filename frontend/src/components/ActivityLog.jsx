@@ -42,11 +42,9 @@ export default function ActivityLog({ userEmail }) {
   async function loadLogs() {
     setLoading(true)
     try {
-      const data = await fetch('/api/activity?limit=100').then(r => r.json())
-      const filtered = Array.isArray(data)
-        ? data.filter(l => l.action !== 'viewed_activity_log')
-        : []
-      setLogs(filtered)
+      const EXCLUDED = ['viewed_activity_log']
+      const data = await fetch('/api/activity?limit=200').then(r => r.json())
+      setLogs(Array.isArray(data) ? data.filter(l => !EXCLUDED.includes(l.action)) : [])
     } catch {}
     setLoading(false)
   }
@@ -97,30 +95,37 @@ export default function ActivityLog({ userEmail }) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(log => (
-                  <tr key={log.id}>
-                    <td style={{ fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>
-                      {timeAgo(log.created_at)}
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                        {new Date(log.created_at).toLocaleString('en-GB')}
-                      </div>
-                    </td>
-                    <td style={{ fontSize: 12 }}>
-                      {log.user_email
-                        ? <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 12, fontSize: 11 }}>{log.user_email}</span>
-                        : <span style={{ color: '#cbd5e1' }}>—</span>}
-                    </td>
-                    <td>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
-                        {ACTION_ICONS[log.action] || ACTION_ICONS.default}
-                        {log.action.replace(/_/g, ' ')}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 12, color: '#64748b' }}>
-                      {formatDetails(log.details) || '—'}
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map(log => {
+                  const isLogin  = log.action === 'login'
+                  const isLogout = log.action === 'logout'
+                  const rowBg = isLogin  ? '#f0fdf4'
+                              : isLogout ? '#fef2f2'
+                              : 'transparent'
+                  return (
+                    <tr key={log.id} style={{ background: rowBg }}>
+                      <td style={{ fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>
+                        {timeAgo(log.created_at)}
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                          {new Date(log.created_at).toLocaleString('en-GB')}
+                        </div>
+                      </td>
+                      <td style={{ fontSize: 12 }}>
+                        {log.user_email
+                          ? <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 12, fontSize: 11 }}>{log.user_email}</span>
+                          : <span style={{ color: '#cbd5e1' }}>—</span>}
+                      </td>
+                      <td>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: isLogin || isLogout ? 700 : 600 }}>
+                          {ACTION_ICONS[log.action] || ACTION_ICONS.default}
+                          {log.action.replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 12, color: '#64748b' }}>
+                        {formatDetails(log.details) || '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
