@@ -36,14 +36,6 @@ export default function ActivityLog({ userEmail }) {
   const [filter,  setFilter]  = useState('all')
 
   useEffect(() => {
-    // Log this visit
-    if (userEmail) {
-      fetch('/api/activity', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'viewed_activity_log', user_email: userEmail }),
-      }).catch(() => {})
-    }
     loadLogs()
   }, [])
 
@@ -51,7 +43,10 @@ export default function ActivityLog({ userEmail }) {
     setLoading(true)
     try {
       const data = await fetch('/api/activity?limit=100').then(r => r.json())
-      setLogs(Array.isArray(data) ? data : [])
+      const filtered = Array.isArray(data)
+        ? data.filter(l => l.action !== 'viewed_activity_log')
+        : []
+      setLogs(filtered)
     } catch {}
     setLoading(false)
   }
