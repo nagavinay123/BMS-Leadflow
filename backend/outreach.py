@@ -32,7 +32,7 @@ def get_outreach_queue(status: str = None, limit: int = 200) -> list:
     Optionally filter by status: queued | emailed | replied | won | lost
     """
     supabase = _get_client()
-    query = supabase.table("companies").select("*, website_audits(*)").gte("score", 60)
+    query = supabase.table("companies").select("*, website_audits(*)").gte("score", 50)
 
     if status:
         query = query.eq("outreach_status", status)
@@ -73,7 +73,7 @@ def get_outreach_stats() -> dict:
     rows = (
         supabase.table("companies")
         .select("outreach_status, score")
-        .gte("score", 60)
+        .gte("score", 50)
         .execute()
         .data or []
     )
@@ -184,7 +184,7 @@ def get_pipeline_analytics() -> dict:
             "companies":    len(scores),
             "ch_matched":   sum(1 for r in scores if r.get("ch_matched")),
             "has_website":  sum(1 for r in scores if r.get("has_website")),
-            "outreach_ready": sum(1 for r in scores if (r.get("score") or 0) >= 60),
+            "outreach_ready": sum(1 for r in scores if (r.get("score") or 0) >= 50),
         }
     }
 
