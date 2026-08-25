@@ -102,7 +102,18 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (apiOk && session) { refreshStats(); refreshRuns(); fetchCompanies() }
+    if (apiOk && session) {
+      refreshStats()
+      fetch('/api/runs').then(r => r.json()).then(data => {
+        const runsArr = Array.isArray(data) ? data : []
+        setRuns(runsArr)
+        if (runsArr.length > 0) {
+          // Auto-load the most recent search results
+          fetchCompanies(runsArr[0].id)
+          setLastRun(runsArr[0])
+        }
+      }).catch(() => {})
+    }
   }, [apiOk, session])
 
   // ── Loading message rotator ──────────────────────────────────
