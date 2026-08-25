@@ -63,8 +63,7 @@ export default function App() {
   const [msgIdx,      setMsgIdx]      = useState(0)
   const [session,     setSession]     = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
-  const msgTimer      = useRef(null)
-  const loginLoggedRef = useRef(false)
+  const msgTimer = useRef(null)
 
   // ── Auth: persistent session listener ────────────────────────
   useEffect(() => {
@@ -83,17 +82,6 @@ export default function App() {
     // Listen for sign-in / sign-out / token refresh
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession)
-      if (event === 'SIGNED_IN' && newSession?.user?.email && !loginLoggedRef.current) {
-        loginLoggedRef.current = true
-        fetch('/api/activity', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'login', user_email: newSession.user.email }),
-        }).catch(() => {})
-      }
-      if (event === 'SIGNED_OUT') {
-        loginLoggedRef.current = false
-      }
     })
 
     return () => subscription.unsubscribe()
@@ -199,7 +187,16 @@ export default function App() {
 
   // ── Guard: not logged in ──────────────────────────────────────
   if (!session) {
-    return <LoginPage supabase={supabase} onLogin={setSession} />
+    return <LoginPage supabase={supabase} onLogin={newSession => {
+      setSession(newSession)
+      if (newSession?.user?.email) {
+        fetch('/api/activity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'login', user_email: newSession.user.email }),
+        }).catch(() => {})
+      }
+    }} />
   }
 
   // ── Authenticated app ─────────────────────────────────────────
