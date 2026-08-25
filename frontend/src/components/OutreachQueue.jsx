@@ -29,9 +29,9 @@ export default function OutreachQueue() {
   const [companies,  setCompanies]  = useState([])
   const [stats,      setStats]      = useState(null)
   const [loading,    setLoading]    = useState(true)
-  const [filter,     setFilter]     = useState('all')   // all | queued | emailed | replied | won | lost
-  const [composer,   setComposer]   = useState(null)    // company being composed
-  const [updating,   setUpdating]   = useState(null)    // company_id being updated
+  const [filter,     setFilter]     = useState('all')
+  const [composer,   setComposer]   = useState(null)
+  const [updating,   setUpdating]   = useState(null)
 
   useEffect(() => { loadData() }, [])
 
@@ -122,7 +122,7 @@ export default function OutreachQueue() {
         ) : filtered.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--gray-400)' }}>
             {filter === 'all'
-              ? 'No companies with score ≥60 yet. Run a search with full audit to find leads.'
+              ? 'No companies in the outreach queue yet. Run a search with full audit to find leads.'
               : `No companies with status "${filter}".`}
           </div>
         ) : (

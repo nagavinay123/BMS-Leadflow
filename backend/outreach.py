@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
+# Single source of truth for outreach score threshold
+OUTREACH_SCORE_THRESHOLD = int(os.getenv("OUTREACH_SCORE_THRESHOLD", "50"))
+
 load_dotenv()
 
 
@@ -32,7 +35,7 @@ def get_outreach_queue(status: str = None, limit: int = 200) -> list:
     Optionally filter by status: queued | emailed | replied | won | lost
     """
     supabase = _get_client()
-    query = supabase.table("companies").select("*, website_audits(*)").gte("score", 50)
+    query = supabase.table("companies").select("*, website_audits(*)").gte("score", OUTREACH_SCORE_THRESHOLD)
 
     if status:
         query = query.eq("outreach_status", status)
@@ -53,15 +56,23 @@ def queue_company(company_id: str) -> dict:
     }).eq("id", company_id).execute().data or {}
 
 
+VALID_OUTREACH_STATUSES = {
+    "queued", "emailed", "replied", "meeting_booked", "won", "lost", "suppressed", "none"
+}
+
 def update_outreach_status(company_id: str, status: str, notes: str = None) -> dict:
     """
     Update the outreach status for a company.
-    Valid statuses: queued | emailed | replied | won | lost | suppressed
+    Valid statuses: queued | emailed | replied | meeting_booked | won | lost | suppressed
     """
+    if status not in VALID_OUTREACH_STATUSES:
+        raise ValueError(f"Invalid outreach status: {status}. Must be one of {VALID_OUTREACH_STATUSES}")
     supabase = _get_client()
     data = {"outreach_status": status}
     if status == "emailed":
         data["outreach_emailed_at"] = datetime.now(timezone.utc).isoformat()
+    if status == "meeting_booked":
+        data["meeting_booked_at"] = datetime.now(timezone.utc).isoformat()
     if notes:
         data["outreach_notes"] = notes
     return supabase.table("companies").update(data).eq("id", company_id).execute().data or {}
@@ -73,7 +84,7 @@ def get_outreach_stats() -> dict:
     rows = (
         supabase.table("companies")
         .select("outreach_status, score")
-        .gte("score", 50)
+        .gte("score", OUTREACH_SCORE_THRESHOLD)
         .execute()
         .data or []
     )
@@ -83,13 +94,14 @@ def get_outreach_stats() -> dict:
         counts[s] = counts.get(s, 0) + 1
 
     return {
-        "queued":     counts.get("queued", 0),
-        "emailed":    counts.get("emailed", 0),
-        "replied":    counts.get("replied", 0),
-        "won":        counts.get("won", 0),
-        "lost":       counts.get("lost", 0),
-        "none":       counts.get("none", 0),
-        "total_ready": sum(counts.values()),
+        "queued":          counts.get("queued", 0),
+        "emailed":         counts.get("emailed", 0),
+        "replied":         counts.get("replied", 0),
+        "meeting_booked":  counts.get("meeting_booked", 0),
+        "won":             counts.get("won", 0),
+        "lost":            counts.get("lost", 0),
+        "none":            counts.get("none", 0),
+        "total_ready":     sum(counts.values()),
     }
 
 
@@ -184,7 +196,7 @@ def get_pipeline_analytics() -> dict:
             "companies":    len(scores),
             "ch_matched":   sum(1 for r in scores if r.get("ch_matched")),
             "has_website":  sum(1 for r in scores if r.get("has_website")),
-            "outreach_ready": sum(1 for r in scores if (r.get("score") or 0) >= 50),
+            "outreach_ready": sum(1 for r in scores if (r.get("score") or 0) >= OUTREACH_SCORE_THRESHOLD),
         }
     }
 

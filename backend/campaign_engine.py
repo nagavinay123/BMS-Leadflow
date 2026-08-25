@@ -396,6 +396,23 @@ def process_webhook_event(payload: dict) -> dict:
             if email:
                 add_to_suppression({"email": email, "reason": "bounce"})
             logger.info("Bounce from %s — suppressed", email)
+            # ── Bounce rate auto-pause (4% threshold) ─────────
+            campaign_id = member.get("campaign_id")
+            if campaign_id:
+                events_data = db.table("events").select("event_type") \
+                    .eq("campaign_id", campaign_id) \
+                    .in_("event_type", ["sent", "bounce"]).execute().data or []
+                total_sent   = sum(1 for e in events_data if e["event_type"] == "sent")
+                total_bounce = sum(1 for e in events_data if e["event_type"] == "bounce")
+                if total_sent > 0 and (total_bounce / total_sent) >= 0.04:
+                    db.table("campaigns").update({
+                        "status": "paused",
+                        "pause_reason": f"Auto-paused: bounce rate {total_bounce}/{total_sent} ({100*total_bounce//total_sent}%) ≥ 4%",
+                    }).eq("id", campaign_id).execute()
+                    logger.warning(
+                        "Campaign %s auto-paused: bounce rate %d/%d (%.1f%%)",
+                        campaign_id, total_bounce, total_sent, 100*total_bounce/total_sent
+                    )
 
         elif event_type == "unsubscribe":
             update_campaign_member(member_id, {"status": "unsubscribed", "unsubscribed_at": now_iso})
@@ -414,14 +431,15 @@ def process_webhook_event(payload: dict) -> dict:
 
 def populate_campaign(campaign_id: str, icp_id: str = None, limit: int = 500) -> dict:
     """
-    Add all outreach-ready companies (score ≥ 60, email verified, not suppressed)
+    Add all outreach-ready companies (score ≥ threshold, email verified, not suppressed)
     to a campaign as members. Associates the primary verified contact.
     """
     from database import supabase as db, add_campaign_member, is_suppressed
+    from outreach import OUTREACH_SCORE_THRESHOLD
 
-    # Query: companies with score >= 60 AND email_verified = True
+    # Query: companies with score >= threshold AND email_verified = True
     q = db.table("companies").select("id, contact_email, score, icp_id, domain, company_number") \
-        .gte("score", 60) \
+        .gte("score", OUTREACH_SCORE_THRESHOLD) \
         .eq("email_verified", True)
     if icp_id:
         q = q.eq("icp_id", icp_id)

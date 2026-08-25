@@ -49,6 +49,7 @@ from database import (
     upsert_contact,
 )
 from email_verify import verify_email, mv_available, should_send
+from outreach import OUTREACH_SCORE_THRESHOLD
 
 
 # ──────────────────────────────────────────────
@@ -86,7 +87,7 @@ def run_discovery(
         "ch_unmatched":      0,
         "audited":           0,
         "stored":            0,
-        "outreach_ready":    0,   # score >= 60
+        "outreach_ready":    0,   # score >= OUTREACH_SCORE_THRESHOLD
         "est_cost_usd":      0.0,
         "companies":         [],
     }
@@ -132,6 +133,8 @@ def run_discovery(
         else:
             stats["ch_unmatched"] += 1
             ch_tag = "no CH"
+            print(f"  [{i:02d}/{len(places)}] {name[:40]} … {ch_tag} — skipped (PECR: incorporated only)")
+            continue  # Only store Companies House-matched entities
 
         print(f"  [{i:02d}/{len(places)}] {name[:40]} … {ch_tag}")
 
@@ -293,7 +296,7 @@ def run_discovery(
             company["score"]  = score
             company["status"] = "enriched"
 
-            if score >= 60:
+            if score >= OUTREACH_SCORE_THRESHOLD:
                 stats["outreach_ready"] += 1
 
         # Score companies with no website too
@@ -342,7 +345,7 @@ def _print_summary(s: dict):
     print(f"  CH matched:          {s['ch_matched']}")
     print(f"  Stored to Supabase:  {s['stored']}")
     print(f"  Websites audited:    {s['audited']}")
-    print(f"  Outreach ready (≥60):{s['outreach_ready']}")
+    print(f"  Outreach ready (≥{OUTREACH_SCORE_THRESHOLD}):{s['outreach_ready']}")
     print(f"  Est. API cost:       ~${s['est_cost_usd']:.4f}")
     print(f"{'─'*55}\n")
 
