@@ -103,6 +103,7 @@ class SearchRequest(BaseModel):
     town:          str  = Field(..., min_length=2)
     max_results:   int  = Field(50, ge=1, le=10000)
     skip_audit:    bool = Field(False)
+    user_email:    str  = Field(None)
 
 
 class BulkSearchItem(BaseModel):
@@ -174,7 +175,7 @@ def search(request: SearchRequest):
             "town": request.town,
             "max_results": request.max_results,
             "companies_found": len(result.get("companies", [])),
-        }, user_email=request.user_email if hasattr(request, "user_email") else None)
+        }, user_email=request.user_email)
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -272,9 +273,12 @@ def get_audit(company_id: str):
 # ──────────────────────────────────────────────
 
 @app.get("/api/outreach")
-def list_outreach(status: Optional[str] = None, limit: int = 200):
+def list_outreach(status: Optional[str] = None, limit: int = 200, run_id: Optional[str] = None):
     try:
-        return get_outreach_queue(status=status, limit=limit)
+        results = get_outreach_queue(status=status, limit=limit)
+        if run_id:
+            results = [r for r in results if r.get("run_id") == run_id]
+        return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

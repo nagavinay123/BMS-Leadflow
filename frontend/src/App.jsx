@@ -137,7 +137,7 @@ export default function App() {
       const r = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ business_type: businessType, town, max_results: maxResults, skip_audit: skipAudit }),
+        body: JSON.stringify({ business_type: businessType, town, max_results: maxResults, skip_audit: skipAudit, user_email: userEmail }),
       })
       if (!r.ok) {
         let detail = `HTTP ${r.status}`
