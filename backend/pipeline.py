@@ -215,7 +215,6 @@ def run_discovery(
 
             # ── Write to contacts table ──────────────────────
             if company_id and record.get("contact_email"):
-                from datetime import datetime, timezone
                 upsert_contact({
                     "company_id":     company_id,
                     "email":          record["contact_email"],
