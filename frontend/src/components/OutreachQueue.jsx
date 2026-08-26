@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import EmailComposer from './EmailComposer.jsx'
 
-const CALENDLY_URL = 'https://calendly.com/james-bemysocial/30min'
+const CALENDLY_URL = 'https://calendly.com/bemysocial5/30min'
 
 const STATUS_COLOURS = {
   none:            'badge-gray',
