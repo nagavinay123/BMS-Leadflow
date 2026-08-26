@@ -34,7 +34,7 @@ Start:
   uvicorn main:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -869,74 +869,6 @@ def post_activity(payload: dict):
         user_email=payload.get("user_email"),
     )
     return {"ok": True}
-
-
-@app.post("/api/webhooks/calendly")
-async def calendly_webhook(request: Request):
-    """
-    Receives Calendly webhook events.
-    invitee.created  → set company status to meeting_booked, save meeting time
-    invitee.canceled → revert status to replied (keep in pipeline)
-    """
-    payload = await request.json()
-    event   = payload.get("event")
-    p       = payload.get("payload", {})
-
-    invitee_email = (p.get("invitee") or {}).get("email")
-    event_start   = (p.get("event") or {}).get("start_time")
-    calendly_uri  = (p.get("event") or {}).get("uri", "")
-
-    if not invitee_email:
-        return {"ok": False, "error": "No invitee email in payload"}
-
-    # Find company by contact email
-    from database import supabase as _db
-    rows = (
-        _db.table("companies")
-        .select("id, outreach_status")
-        .eq("contact_email", invitee_email)
-        .limit(1)
-        .execute()
-        .data or []
-    )
-    # Also try contacts table
-    if not rows:
-        cont = _db.table("contacts").select("company_id").eq("email", invitee_email).limit(1).execute().data
-        if cont:
-            rows = _db.table("companies").select("id, outreach_status").eq("id", cont[0]["company_id"]).limit(1).execute().data or []
-
-    if not rows:
-        return {"ok": False, "error": f"No lead found for email {invitee_email}"}
-
-    company_id = rows[0]["id"]
-
-    if event == "invitee.created":
-        update = {
-            "outreach_status":  "meeting_booked",
-            "meeting_booked_at": event_start or datetime.now(timezone.utc).isoformat(),
-        }
-        if calendly_uri:
-            update["calendly_event_id"] = calendly_uri
-        _db.table("companies").update(update).eq("id", company_id).execute()
-        # Cancel follow-ups
-        from database import cancel_follow_ups_for_member
-        # Find campaign_member for this company
-        members = _db.table("campaign_members").select("id").eq("company_id", company_id).execute().data or []
-        for m in members:
-            cancel_follow_ups_for_member(m["id"], "meeting_booked")
-        log_activity("meeting_booked", {"calendly_event": calendly_uri, "meeting_at": event_start}, user_email=invitee_email)
-        return {"ok": True, "action": "meeting_booked", "company_id": company_id}
-
-    elif event == "invitee.canceled":
-        # Revert to replied so follow-ups can resume
-        _db.table("companies").update({
-            "outreach_status": "replied",
-            "meeting_booked_at": None,
-        }).eq("id", company_id).execute()
-        log_activity("meeting_canceled", {"calendly_event": calendly_uri}, user_email=invitee_email)
-        return {"ok": True, "action": "reverted_to_replied", "company_id": company_id}
-
-    return {"ok": True, "event": event, "note": "no action taken"}
 
 
 @app.get("/api/production-readiness")
