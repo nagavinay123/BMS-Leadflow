@@ -239,8 +239,8 @@ def process_due_follow_ups() -> dict:
                 raise ValueError("Campaign not found")
             campaign = cam_rows[0]
 
-            # Skip if member stopped
-            if member.get("status") in ("replied","bounced","unsubscribed","stopped"):
+            # Skip if member stopped or meeting already booked
+            if member.get("status") in ("replied","bounced","unsubscribed","stopped","meeting_booked"):
                 db.table("follow_ups").update({"status": "cancelled", "cancel_reason": member["status"]}).eq("id", fu_id).execute()
                 skipped += 1
                 continue

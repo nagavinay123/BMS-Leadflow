@@ -15,6 +15,9 @@ not generic "we can help your business" spam.
 Week 9 upgrade: swap _build_body() with Claude API call for AI-written copy.
 """
 
+import os
+CALENDLY_BOOKING_URL = os.getenv("CALENDLY_BOOKING_URL", "")
+
 
 def generate_email(company: dict, sender_name: str = "James", sender_title: str = "Director") -> dict:
     """
@@ -174,6 +177,11 @@ def _build_body(
         "I can walk through exactly what we'd do and what results you could realistically expect."
     )
     paras.append("")
+    if CALENDLY_BOOKING_URL:
+        paras.append(
+            f"You can pick a time that suits you here: {CALENDLY_BOOKING_URL}"
+        )
+        paras.append("")
 
     # ── Sign-off ─────────────────────────────────────────────
     paras.append(f"Best regards,")
