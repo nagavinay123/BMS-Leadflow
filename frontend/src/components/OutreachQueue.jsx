@@ -391,7 +391,6 @@ export default function OutreachQueue() {
                     <th>Phone</th>
                     <th>Call Status</th>
                     <th>Notes</th>
-                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -453,23 +452,6 @@ export default function OutreachQueue() {
                             }}
                           />
                           {savingCall === c.id && <span style={{ fontSize: 10, color: '#94a3b8' }}>saving…</span>}
-                        </td>
-                        <td>
-                          <button
-                            onClick={() => {
-                              if (c.phone) window.open(`tel:${c.phone}`)
-                              setCallStatusAndSave(c.id, 'completed')
-                            }}
-                            style={{
-                              padding: '6px 14px', fontSize: 13, fontWeight: 700,
-                              background: '#047857', color: '#fff',
-                              border: 'none', borderRadius: 8, cursor: 'pointer',
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            📞 Call
-                          </button>
                         </td>
                       </tr>
                     )
