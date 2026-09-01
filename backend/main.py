@@ -302,6 +302,22 @@ def save_imp_notes(company_id: str, request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.patch("/api/outreach/{company_id}/phone")
+def save_phone_call(company_id: str, request: dict):
+    try:
+        from database import supabase as db
+        update = {}
+        if "phone_call_status" in request:
+            update["phone_call_status"] = request["phone_call_status"]
+        if "phone_call_notes" in request:
+            update["phone_call_notes"] = request["phone_call_notes"]
+        if update:
+            db.table("companies").update(update).eq("id", company_id).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/outreach/{company_id}/status")
 def set_outreach_status(company_id: str, request: OutreachStatusRequest):
     valid = {"queued", "emailed", "replied", "won", "lost", "suppressed", "none", "meeting_booked", "phone_call"}
