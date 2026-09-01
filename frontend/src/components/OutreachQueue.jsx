@@ -9,6 +9,7 @@ const STATUS_COLOURS = {
   emailed:         'badge-amber',
   replied:         'badge-green',
   meeting_booked:  'badge-purple',
+  phone_call:      'badge-amber',
   won:             'badge-green',
   lost:            'badge-red',
   suppressed:      'badge-red',
@@ -20,6 +21,7 @@ const STATUS_LABELS = {
   emailed:         '📧 Emailed',
   replied:         '💬 Replied',
   meeting_booked:  '📅 Meeting Booked',
+  phone_call:      '📞 Phone Called',
   won:             '🏆 Won',
   lost:            '✗ Lost',
   suppressed:      '🚫 Suppressed',
@@ -32,6 +34,8 @@ export default function OutreachQueue() {
   const [filter,     setFilter]     = useState('all')
   const [composer,   setComposer]   = useState(null)
   const [updating,   setUpdating]   = useState(null)
+  const [notes,      setNotes]      = useState({})   // { companyId: text }
+  const [savingNote, setSavingNote] = useState(null)
 
   useEffect(() => { loadData() }, [])
 
@@ -42,7 +46,12 @@ export default function OutreachQueue() {
         fetch('/api/outreach').then(r => r.json()),
         fetch('/api/outreach/stats').then(r => r.json()),
       ])
-      setCompanies(Array.isArray(co) ? co : [])
+      const arr = Array.isArray(co) ? co : []
+      setCompanies(arr)
+      // seed local notes state from saved values
+      const n = {}
+      arr.forEach(c => { if (c.imp_notes) n[c.id] = c.imp_notes })
+      setNotes(prev => ({ ...n, ...prev }))
       setStats(st)
     } catch {}
     setLoading(false)
@@ -53,6 +62,16 @@ export default function OutreachQueue() {
     await fetch(`/api/outreach/${companyId}/queue`, { method: 'POST' })
     await loadData()
     setUpdating(null)
+  }
+
+  async function saveNote(companyId) {
+    setSavingNote(companyId)
+    await fetch(`/api/outreach/${companyId}/notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imp_notes: notes[companyId] || '' }),
+    }).catch(() => {})
+    setSavingNote(null)
   }
 
   async function handleStatus(companyId, status) {
@@ -100,7 +119,7 @@ export default function OutreachQueue() {
 
           {/* Filter tabs */}
           <div style={{ display: 'flex', gap: 6 }}>
-            {['all', 'none', 'queued', 'emailed', 'replied', 'meeting_booked', 'won', 'lost'].map(s => (
+            {['all', 'none', 'queued', 'emailed', 'replied', 'phone_call', 'meeting_booked', 'won', 'lost'].map(s => (
               <button
                 key={s}
                 className={`btn btn-secondary ${filter === s ? 'active-filter' : ''}`}
@@ -136,6 +155,7 @@ export default function OutreachQueue() {
                   <th>Email</th>
                   <th>Phone</th>
                   <th>Website Issues</th>
+                  <th>IMP Notes</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
@@ -176,6 +196,27 @@ export default function OutreachQueue() {
                       {(c.issues || []).length > 0
                         ? <span className="badge badge-amber">{c.issues.length} issue{c.issues.length > 1 ? 's' : ''}</span>
                         : <span className="badge badge-green">✓ Clean</span>}
+                    </td>
+                    <td style={{ minWidth: 160 }}>
+                      <textarea
+                        rows={2}
+                        placeholder="Add note…"
+                        value={notes[c.id] || ''}
+                        onChange={e => setNotes(prev => ({ ...prev, [c.id]: e.target.value }))}
+                        onBlur={() => saveNote(c.id)}
+                        style={{
+                          width: '100%', fontSize: 12, padding: '4px 6px',
+                          border: '1px solid #e2e8f0', borderRadius: 6,
+                          resize: 'vertical', fontFamily: 'inherit',
+                          background: notes[c.id] ? '#fffbeb' : '#f8fafc',
+                          color: '#0f172a',
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      {savingNote === c.id && (
+                        <span style={{ fontSize: 10, color: '#94a3b8' }}>saving…</span>
+                      )}
                     </td>
                     <td>
                       <span className={`badge ${STATUS_COLOURS[c.outreach_status || 'none']}`}>
@@ -236,6 +277,17 @@ export default function OutreachQueue() {
                             >
                               📅 Book Meeting
                             </button>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7', fontWeight: 600 }}
+                              disabled={updating === c.id}
+                              onClick={() => {
+                                handleStatus(c.id, 'phone_call')
+                                if (c.phone) window.open(`tel:${c.phone}`)
+                              }}
+                            >
+                              📞 Phone Call
+                            </button>
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
                               disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>
                               🏆 Won
@@ -254,6 +306,13 @@ export default function OutreachQueue() {
                               onClick={() => window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name || '')}&email=${encodeURIComponent(c.contact_email || '')}`, '_blank')}
                             >
                               📅 Calendly
+                            </button>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7', fontWeight: 600 }}
+                              onClick={() => { if (c.phone) window.open(`tel:${c.phone}`) }}
+                            >
+                              📞 Phone Call
                             </button>
                             <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
                               disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>
