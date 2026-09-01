@@ -37,6 +37,7 @@ const COLUMNS = [
   { key: 'name',               label: 'Business',     sortable: true  },
   { key: 'contact_first_name', label: 'First Name',   sortable: true  },
   { key: 'contact_last_name',  label: 'Last Name',    sortable: true  },
+  { key: 'contact_role',       label: 'Job Title',    sortable: true  },
   { key: 'contact_email',      label: 'Email',        sortable: true  },
   { key: 'phone',              label: 'Phone',        sortable: false },
   { key: 'registered_name',    label: 'Reg. Name',    sortable: true  },
@@ -375,12 +376,15 @@ export default function CompanyTable({ companies }) {
                     {c.contact_last_name
                       ? <>
                           <div style={{ fontWeight: 600 }}>{c.contact_last_name}</div>
-                          {c.contact_role && (
-                            <div className="td-sub" style={{ textTransform: 'capitalize' }}>
-                              {c.contact_role.replace(/-/g, ' ')}
-                            </div>
-                          )}
                         </>
+                      : <Dash />
+                    }
+                  </td>
+
+                  {/* Job Title */}
+                  <td style={{ fontSize: 12, textTransform: 'capitalize' }}>
+                    {c.contact_role
+                      ? c.contact_role.replace(/-/g, ' ')
                       : <Dash />
                     }
                   </td>
