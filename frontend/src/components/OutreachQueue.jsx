@@ -221,6 +221,7 @@ export default function OutreachQueue() {
                     <th>Score</th>
                     <th>Business</th>
                     <th>Owner</th>
+                    <th>Job Title</th>
                     <th>Email</th>
                     <th>Phone</th>
                     <th>Issues</th>
@@ -245,9 +246,11 @@ export default function OutreachQueue() {
                       </td>
                       <td>
                         {c.contact_full_name
-                          ? <><div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
-                              <div className="td-sub" style={{ textTransform: 'capitalize' }}>{(c.contact_role || '').replace(/-/g,' ')}</div></>
+                          ? <div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
                           : <span style={{ color: '#cbd5e1' }}>—</span>}
+                      </td>
+                      <td style={{ fontSize: 12, textTransform: 'capitalize', color: '#475569' }}>
+                        {c.contact_role ? (c.contact_role).replace(/-/g,' ') : <span style={{ color: '#cbd5e1' }}>—</span>}
                       </td>
                       <td style={{ fontSize: 12 }}>
                         {c.contact_email
@@ -388,6 +391,7 @@ export default function OutreachQueue() {
                   <tr>
                     <th>Business</th>
                     <th>Owner</th>
+                    <th>Job Title</th>
                     <th>Phone</th>
                     <th>Call Status</th>
                     <th>Notes</th>
@@ -407,9 +411,11 @@ export default function OutreachQueue() {
                         </td>
                         <td>
                           {c.contact_full_name
-                            ? <><div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
-                                <div className="td-sub" style={{ textTransform: 'capitalize' }}>{(c.contact_role || '').replace(/-/g,' ')}</div></>
+                            ? <div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
                             : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td style={{ fontSize: 12, textTransform: 'capitalize', color: '#475569' }}>
+                          {c.contact_role ? (c.contact_role).replace(/-/g,' ') : <span style={{ color: '#cbd5e1' }}>—</span>}
                         </td>
                         <td style={{ fontSize: 13, fontWeight: 600 }}>
                           {c.phone
