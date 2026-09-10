@@ -12,7 +12,6 @@ import CampaignMonitor from './components/CampaignMonitor.jsx'
 import ApprovalQueue   from './components/ApprovalQueue.jsx'
 import CompliancePage  from './components/CompliancePage.jsx'
 import ActivityLog     from './components/ActivityLog.jsx'
-import AutoOutreach   from './components/AutoOutreach.jsx'
 import LoginPage, { ConfigWarning } from './components/LoginPage.jsx'
 import bmsLogo from './bms-logo.png'
 
@@ -287,12 +286,7 @@ export default function App() {
               </div>
             )}
 
-            {!loading && companies.length > 0 && (
-              <>
-                <CompanyTable companies={companies} />
-                <AutoOutreach runId={lastRun?.run_id} userEmail={userEmail} />
-              </>
-            )}
+            {!loading && companies.length > 0 && <CompanyTable companies={companies} />}
 
             {!loading && companies.length === 0 && !error && (
               <div className="empty-state">
