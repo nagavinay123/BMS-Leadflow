@@ -520,21 +520,24 @@ def auto_outreach(request: AutoOutreachRequest):
                     "reason":     "dry_run=True — draft saved, no email sent",
                 })
             else:
-                # Mark as queued then emailed + record audit event
+                # Mark as queued then emailed
                 update_outreach_status(company_id, "queued")
                 update_outreach_status(company_id, "emailed")
-                record_event({
-                    "company_id":  company_id,
-                    "event_type":  "auto_outreach_sent",
-                    "email":       email,
-                    "occurred_at": datetime.now(timezone.utc).isoformat(),
-                    "meta": {
+                # Record audit event — non-fatal if events table schema differs
+                try:
+                    record_event({
+                        "event_type": "auto_outreach_sent",
+                        "email":      email,
                         "subject":    draft["subject"],
-                        "template":   draft["template_used"],
-                        "triggered_by": request.user_email or "system",
-                        "run_id":     request.run_id,
-                    },
-                })
+                        "metadata":   {
+                            "company_id":   company_id,
+                            "template":     draft["template_used"],
+                            "triggered_by": request.user_email or "system",
+                            "run_id":       request.run_id,
+                        },
+                    })
+                except Exception:
+                    pass  # logging failure must not abort the send
                 sent += 1
                 details.append({
                     "company_id": company_id,
