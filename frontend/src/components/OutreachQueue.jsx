@@ -3,6 +3,9 @@ import EmailComposer from './EmailComposer.jsx'
 
 const CALENDLY_URL = 'https://calendly.com/bemysocial5/30min'
 
+// Statuses that are ineligible for bulk send (already contacted or closed)
+const SEND_BLOCKED = new Set(['emailed', 'replied', 'meeting_booked', 'won', 'lost', 'suppressed'])
+
 // ── Outreach status config ────────────────────────────────────────────────────
 const STATUS_COLOURS = {
   none:           'badge-gray',
@@ -36,23 +39,30 @@ const CALL_STATUS_CONFIG = {
 }
 
 export default function OutreachQueue() {
-  const [companies,   setCompanies]   = useState([])
-  const [stats,       setStats]       = useState(null)
-  const [loading,     setLoading]     = useState(true)
-  const [filter,      setFilter]      = useState('all')
-  const [composer,    setComposer]    = useState(null)
-  const [updating,    setUpdating]    = useState(null)
-  const [viewMode,    setViewMode]    = useState('outreach') // 'outreach' | 'phone'
+  const [companies,     setCompanies]     = useState([])
+  const [stats,         setStats]         = useState(null)
+  const [loading,       setLoading]       = useState(true)
+  const [filter,        setFilter]        = useState('all')
+  const [composer,      setComposer]      = useState(null)
+  const [updating,      setUpdating]      = useState(null)
+  const [viewMode,      setViewMode]      = useState('outreach') // 'outreach' | 'phone'
 
   // Outreach notes (imp_notes)
-  const [notes,       setNotes]       = useState({})
-  const [savingNote,  setSavingNote]  = useState(null)
+  const [notes,         setNotes]         = useState({})
+  const [savingNote,    setSavingNote]    = useState(null)
 
   // Phone call notes & status
-  const [callNotes,   setCallNotes]   = useState({})
-  const [callStatus,  setCallStatus]  = useState({})
-  const [savingCall,  setSavingCall]  = useState(null)
-  const [callFilter,  setCallFilter]  = useState('all')
+  const [callNotes,     setCallNotes]     = useState({})
+  const [callStatus,    setCallStatus]    = useState({})
+  const [savingCall,    setSavingCall]    = useState(null)
+  const [callFilter,    setCallFilter]    = useState('all')
+
+  // Bulk send state
+  const [selected,      setSelected]      = useState(new Set())
+  const [showConfirm,   setShowConfirm]   = useState(false)
+  const [sending,       setSending]       = useState(false)
+  const [sendProgress,  setSendProgress]  = useState(null)   // { current, total }
+  const [sendResults,   setSendResults]   = useState(null)   // { sent, skipped, failed, dry_run }
 
   useEffect(() => { loadData() }, [])
 
@@ -67,7 +77,7 @@ export default function OutreachQueue() {
       setCompanies(arr)
       const n = {}, cs = {}, cn = {}
       arr.forEach(c => {
-        if (c.imp_notes)        n[c.id]  = c.imp_notes
+        if (c.imp_notes)         n[c.id]  = c.imp_notes
         if (c.phone_call_status) cs[c.id] = c.phone_call_status
         if (c.phone_call_notes)  cn[c.id] = c.phone_call_notes
       })
@@ -122,6 +132,63 @@ export default function OutreachQueue() {
     await saveCallData(companyId, { phone_call_status: status })
   }
 
+  // ── Checkbox helpers ──────────────────────────────────────────────────────
+  function isEligible(c) {
+    return !SEND_BLOCKED.has(c.outreach_status || 'none')
+  }
+
+  function toggleSelect(id) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAll() {
+    const eligibleIds = filtered.filter(isEligible).map(c => c.id)
+    setSelected(new Set(eligibleIds))
+  }
+
+  function clearSelection() {
+    setSelected(new Set())
+  }
+
+  // ── Bulk send ─────────────────────────────────────────────────────────────
+  async function confirmSend() {
+    setShowConfirm(false)
+    setSending(true)
+    setSendResults(null)
+    const ids = [...selected]
+    setSendProgress({ current: 0, total: ids.length })
+
+    try {
+      // Single batch request — backend handles sequencing
+      const res = await fetch('/api/outreach/send-selected', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_ids: ids }),
+      })
+      const data = await res.json()
+      setSendResults({
+        sent:    data.sent    || 0,
+        skipped: data.skipped || 0,
+        failed:  data.failed  || 0,
+        dry_run: data.dry_run ?? true,
+        details: data.details || [],
+        error:   !res.ok ? (data.detail || 'Server error') : null,
+      })
+      setSelected(new Set())
+      await loadData()
+    } catch (e) {
+      setSendResults({ sent: 0, skipped: 0, failed: ids.length, dry_run: true, error: e.message, details: [] })
+    }
+
+    setSending(false)
+    setSendProgress(null)
+  }
+
   // ── Filtered lists ────────────────────────────────────────────────────────
   const filtered = filter === 'all'
     ? companies
@@ -134,6 +201,9 @@ export default function OutreachQueue() {
         return s === callFilter
       })
 
+  const eligibleCount   = filtered.filter(isEligible).length
+  const unavailableCount = filtered.length - eligibleCount
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div>
@@ -141,13 +211,13 @@ export default function OutreachQueue() {
       {stats && (
         <div className="outreach-stats">
           {[
-            { label: 'Ready',   value: stats.total_ready,        color: 'var(--navy)'  },
-            { label: 'Queued',  value: stats.queued,             color: '#2563eb'      },
-            { label: 'Emailed', value: stats.emailed,            color: 'var(--amber)' },
-            { label: 'Replied', value: stats.replied,            color: '#7c3aed'      },
-            { label: 'Meeting', value: stats.meeting_booked || 0, color: '#7c3aed'    },
-            { label: 'Won',     value: stats.won,                color: 'var(--green)' },
-            { label: 'Lost',    value: stats.lost,               color: 'var(--red)'   },
+            { label: 'Ready',   value: stats.total_ready,         color: 'var(--navy)'  },
+            { label: 'Queued',  value: stats.queued,              color: '#2563eb'      },
+            { label: 'Emailed', value: stats.emailed,             color: 'var(--amber)' },
+            { label: 'Replied', value: stats.replied,             color: '#7c3aed'      },
+            { label: 'Meeting', value: stats.meeting_booked || 0, color: '#7c3aed'      },
+            { label: 'Won',     value: stats.won,                 color: 'var(--green)' },
+            { label: 'Lost',    value: stats.lost,                color: 'var(--red)'   },
           ].map((s, i) => (
             <div key={i} className="stat-tile">
               <span className="stat-value" style={{ color: s.color }}>{s.value}</span>
@@ -207,6 +277,132 @@ export default function OutreachQueue() {
             </div>
           </div>
 
+          {/* ── Bulk send toolbar ────────────────────────────────────────── */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '10px 16px', borderBottom: '1px solid #e2e8f0',
+            background: '#f8fafc',
+          }}>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '5px 14px', fontSize: 12 }}
+              onClick={selectAll}
+              disabled={sending || eligibleCount === 0}
+            >
+              ☑ Select All Eligible ({eligibleCount})
+            </button>
+            {selected.size > 0 && (
+              <button
+                className="btn btn-secondary"
+                style={{ padding: '5px 14px', fontSize: 12 }}
+                onClick={clearSelection}
+                disabled={sending}
+              >
+                ✕ Clear ({selected.size})
+              </button>
+            )}
+            {unavailableCount > 0 && (
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>
+                {unavailableCount} already contacted (checkboxes disabled)
+              </span>
+            )}
+            <div style={{ flex: 1 }} />
+            {sending && sendProgress && (
+              <span style={{ fontSize: 13, color: '#2563eb', fontWeight: 600 }}>
+                ⏳ Sending {sendProgress.current} of {sendProgress.total}…
+              </span>
+            )}
+            <button
+              className="btn btn-primary"
+              style={{
+                padding: '6px 18px', fontSize: 13, fontWeight: 700,
+                opacity: selected.size === 0 || sending ? 0.5 : 1,
+              }}
+              disabled={selected.size === 0 || sending}
+              onClick={() => setShowConfirm(true)}
+            >
+              ✉ Send Selected ({selected.size})
+            </button>
+          </div>
+
+          {/* ── DRY RUN banner ───────────────────────────────────────────── */}
+          {sendResults?.dry_run && (
+            <div style={{
+              background: '#fffbeb', border: '1px solid #fcd34d',
+              borderRadius: 6, padding: '8px 16px', margin: '10px 16px 0',
+              fontSize: 13, color: '#92400e', fontWeight: 600,
+            }}>
+              🧪 DRY RUN — No real emails were sent. Set <code>DRY_RUN=false</code> in backend .env to send live.
+            </div>
+          )}
+
+          {/* ── Send results summary ──────────────────────────────────────── */}
+          {sendResults && (
+            <div style={{
+              margin: '10px 16px 0',
+              padding: '10px 16px', borderRadius: 8,
+              background: sendResults.error ? '#fee2e2' : '#f0fdf4',
+              border: `1px solid ${sendResults.error ? '#fca5a5' : '#86efac'}`,
+              fontSize: 13,
+            }}>
+              {sendResults.error ? (
+                <span style={{ color: '#dc2626', fontWeight: 600 }}>❌ Error: {sendResults.error}</span>
+              ) : (
+                <span>
+                  <span style={{ color: '#047857', fontWeight: 700 }}>✅ {sendResults.sent} sent</span>
+                  {sendResults.skipped > 0 && (
+                    <span style={{ color: '#92400e', fontWeight: 600 }}> &nbsp;|&nbsp; ⏭ {sendResults.skipped} skipped</span>
+                  )}
+                  {sendResults.failed > 0 && (
+                    <span style={{ color: '#dc2626', fontWeight: 600 }}> &nbsp;|&nbsp; ❌ {sendResults.failed} failed</span>
+                  )}
+                </span>
+              )}
+              <button
+                onClick={() => setSendResults(null)}
+                style={{
+                  float: 'right', background: 'none', border: 'none',
+                  cursor: 'pointer', color: '#94a3b8', fontSize: 16, lineHeight: 1,
+                }}
+              >×</button>
+            </div>
+          )}
+
+          {/* ── Confirmation dialog ───────────────────────────────────────── */}
+          {showConfirm && (
+            <div style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999,
+            }}>
+              <div style={{
+                background: '#fff', borderRadius: 12, padding: 28, maxWidth: 420, width: '90%',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+              }}>
+                <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>Confirm Bulk Send</h3>
+                <p style={{ margin: '0 0 18px', color: '#475569', fontSize: 14 }}>
+                  You are about to send emails to <strong>{selected.size} lead{selected.size !== 1 ? 's' : ''}</strong>.
+                  The backend will re-verify eligibility before each send.
+                </p>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '8px 18px' }}
+                    onClick={() => setShowConfirm(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: '8px 20px', fontWeight: 700 }}
+                    onClick={confirmSend}
+                  >
+                    ✉ Send Now
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--gray-400)' }}>Loading…</div>
           ) : filtered.length === 0 ? (
@@ -218,6 +414,7 @@ export default function OutreachQueue() {
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 32 }}></th>
                     <th>Score</th>
                     <th>Business</th>
                     <th>Owner</th>
@@ -231,120 +428,134 @@ export default function OutreachQueue() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(c => (
-                    <tr key={c.id}>
-                      <td>
-                        <span className={`badge ${c.score >= 80 ? 'badge-green' : 'badge-navy'}`}>
-                          {c.score} {c.score >= 80 ? '🔥 Hot' : '✓ Warm'}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="td-name">
-                          {c.website ? <a href={c.website} target="_blank" rel="noreferrer">{c.name}</a> : c.name}
-                        </div>
-                        {c.registered_name && <div className="td-sub">{c.registered_name}</div>}
-                      </td>
-                      <td>
-                        {c.contact_full_name
-                          ? <div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
-                          : <span style={{ color: '#cbd5e1' }}>—</span>}
-                      </td>
-                      <td style={{ fontSize: 12, textTransform: 'capitalize', color: '#475569' }}>
-                        {c.contact_role ? (c.contact_role).replace(/-/g,' ') : <span style={{ color: '#cbd5e1' }}>—</span>}
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        {c.contact_email
-                          ? <a href={`mailto:${c.contact_email}`} style={{ color: 'var(--navy)' }}>{c.contact_email}</a>
-                          : <span style={{ color: '#cbd5e1' }}>—</span>}
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        {c.phone
-                          ? <a href={`tel:${c.phone}`} style={{ color: 'var(--navy)' }}>{c.phone}</a>
-                          : <span style={{ color: '#cbd5e1' }}>—</span>}
-                      </td>
-                      <td>
-                        {(c.issues || []).length > 0
-                          ? <span className="badge badge-amber">{c.issues.length} issue{c.issues.length > 1 ? 's' : ''}</span>
-                          : <span className="badge badge-green">✓ Clean</span>}
-                      </td>
-                      <td style={{ minWidth: 150 }}>
-                        <textarea
-                          rows={2}
-                          placeholder="Add note…"
-                          value={notes[c.id] || ''}
-                          onChange={e => setNotes(prev => ({ ...prev, [c.id]: e.target.value }))}
-                          onBlur={() => saveNote(c.id)}
-                          style={{
-                            width: '100%', fontSize: 12, padding: '4px 6px',
-                            border: '1px solid #e2e8f0', borderRadius: 6,
-                            resize: 'vertical', fontFamily: 'inherit',
-                            background: notes[c.id] ? '#fffbeb' : '#f8fafc',
-                            color: '#0f172a', outline: 'none', boxSizing: 'border-box',
-                          }}
-                        />
-                        {savingNote === c.id && <span style={{ fontSize: 10, color: '#94a3b8' }}>saving…</span>}
-                      </td>
-                      <td>
-                        <span className={`badge ${STATUS_COLOURS[c.outreach_status || 'none']}`}>
-                          {STATUS_LABELS[c.outreach_status || 'none']}
-                        </span>
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <button className="btn btn-primary" style={{ padding: '4px 10px', fontSize: 12 }}
-                            onClick={() => setComposer(c)}>✉ Email</button>
+                  {filtered.map(c => {
+                    const eligible   = isEligible(c)
+                    const isChecked  = selected.has(c.id)
+                    return (
+                      <tr key={c.id} style={{ background: isChecked ? '#eff6ff' : undefined }}>
+                        <td style={{ textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={!eligible || sending}
+                            onChange={() => toggleSelect(c.id)}
+                            title={!eligible ? `Already ${c.outreach_status || 'contacted'}` : 'Select for bulk send'}
+                            style={{ cursor: eligible ? 'pointer' : 'not-allowed', width: 16, height: 16 }}
+                          />
+                        </td>
+                        <td>
+                          <span className={`badge ${c.score >= 80 ? 'badge-green' : 'badge-navy'}`}>
+                            {c.score} {c.score >= 80 ? '🔥 Hot' : '✓ Warm'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="td-name">
+                            {c.website ? <a href={c.website} target="_blank" rel="noreferrer">{c.name}</a> : c.name}
+                          </div>
+                          {c.registered_name && <div className="td-sub">{c.registered_name}</div>}
+                        </td>
+                        <td>
+                          {c.contact_full_name
+                            ? <div style={{ fontWeight: 600 }}>{c.contact_full_name}</div>
+                            : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td style={{ fontSize: 12, textTransform: 'capitalize', color: '#475569' }}>
+                          {c.contact_role ? (c.contact_role).replace(/-/g,' ') : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {c.contact_email
+                            ? <a href={`mailto:${c.contact_email}`} style={{ color: 'var(--navy)' }}>{c.contact_email}</a>
+                            : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {c.phone
+                            ? <a href={`tel:${c.phone}`} style={{ color: 'var(--navy)' }}>{c.phone}</a>
+                            : <span style={{ color: '#cbd5e1' }}>—</span>}
+                        </td>
+                        <td>
+                          {(c.issues || []).length > 0
+                            ? <span className="badge badge-amber">{c.issues.length} issue{c.issues.length > 1 ? 's' : ''}</span>
+                            : <span className="badge badge-green">✓ Clean</span>}
+                        </td>
+                        <td style={{ minWidth: 150 }}>
+                          <textarea
+                            rows={2}
+                            placeholder="Add note…"
+                            value={notes[c.id] || ''}
+                            onChange={e => setNotes(prev => ({ ...prev, [c.id]: e.target.value }))}
+                            onBlur={() => saveNote(c.id)}
+                            style={{
+                              width: '100%', fontSize: 12, padding: '4px 6px',
+                              border: '1px solid #e2e8f0', borderRadius: 6,
+                              resize: 'vertical', fontFamily: 'inherit',
+                              background: notes[c.id] ? '#fffbeb' : '#f8fafc',
+                              color: '#0f172a', outline: 'none', boxSizing: 'border-box',
+                            }}
+                          />
+                          {savingNote === c.id && <span style={{ fontSize: 10, color: '#94a3b8' }}>saving…</span>}
+                        </td>
+                        <td>
+                          <span className={`badge ${STATUS_COLOURS[c.outreach_status || 'none']}`}>
+                            {STATUS_LABELS[c.outreach_status || 'none']}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button className="btn btn-primary" style={{ padding: '4px 10px', fontSize: 12 }}
+                              onClick={() => setComposer(c)}>✉ Email</button>
 
-                          {(!c.outreach_status || c.outreach_status === 'none') && (
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }}
-                              disabled={updating === c.id} onClick={() => handleQueue(c.id)}>+ Queue</button>
-                          )}
-                          {c.outreach_status === 'queued' && (
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'emailed')}>Mark Emailed</button>
-                          )}
-                          {c.outreach_status === 'emailed' && (<>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'replied')}>Replied ✓</button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>No Reply ✗</button>
-                          </>)}
-                          {c.outreach_status === 'replied' && (<>
-                            <button className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd', fontWeight: 700 }}
-                              onClick={() => { handleStatus(c.id, 'meeting_booked'); window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name||'')}&email=${encodeURIComponent(c.contact_email||'')}`, '_blank') }}>
-                              📅 Book Meeting
-                            </button>
-                            <button className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7' }}
-                              disabled={updating === c.id}
-                              onClick={() => { handleStatus(c.id, 'phone_call'); if (c.phone) window.open(`tel:${c.phone}`) }}>
-                              📞 Phone Call
-                            </button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>🏆 Won</button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>Lost ✗</button>
-                          </>)}
-                          {c.outreach_status === 'meeting_booked' && (<>
-                            <button className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd' }}
-                              onClick={() => window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name||'')}&email=${encodeURIComponent(c.contact_email||'')}`, '_blank')}>
-                              📅 Calendly
-                            </button>
-                            <button className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7' }}
-                              onClick={() => { if (c.phone) window.open(`tel:${c.phone}`) }}>
-                              📞 Phone Call
-                            </button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>🏆 Won</button>
-                            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
-                              disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>Lost ✗</button>
-                          </>)}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                            {(!c.outreach_status || c.outreach_status === 'none') && (
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }}
+                                disabled={updating === c.id} onClick={() => handleQueue(c.id)}>+ Queue</button>
+                            )}
+                            {c.outreach_status === 'queued' && (
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12 }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'emailed')}>Mark Emailed</button>
+                            )}
+                            {c.outreach_status === 'emailed' && (<>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'replied')}>Replied ✓</button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>No Reply ✗</button>
+                            </>)}
+                            {c.outreach_status === 'replied' && (<>
+                              <button className="btn btn-secondary"
+                                style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd', fontWeight: 700 }}
+                                onClick={() => { handleStatus(c.id, 'meeting_booked'); window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name||'')}&email=${encodeURIComponent(c.contact_email||'')}`, '_blank') }}>
+                                📅 Book Meeting
+                              </button>
+                              <button className="btn btn-secondary"
+                                style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7' }}
+                                disabled={updating === c.id}
+                                onClick={() => { handleStatus(c.id, 'phone_call'); if (c.phone) window.open(`tel:${c.phone}`) }}>
+                                📞 Phone Call
+                              </button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>🏆 Won</button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>Lost ✗</button>
+                            </>)}
+                            {c.outreach_status === 'meeting_booked' && (<>
+                              <button className="btn btn-secondary"
+                                style={{ padding: '4px 10px', fontSize: 12, background: '#ede9fe', color: '#7c3aed', borderColor: '#c4b5fd' }}
+                                onClick={() => window.open(`${CALENDLY_URL}?name=${encodeURIComponent(c.contact_full_name||'')}&email=${encodeURIComponent(c.contact_email||'')}`, '_blank')}>
+                                📅 Calendly
+                              </button>
+                              <button className="btn btn-secondary"
+                                style={{ padding: '4px 10px', fontSize: 12, background: '#ecfdf5', color: '#047857', borderColor: '#6ee7b7' }}
+                                onClick={() => { if (c.phone) window.open(`tel:${c.phone}`) }}>
+                                📞 Phone Call
+                              </button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#dcfce7', color: 'var(--green)', borderColor: '#86efac' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'won')}>🏆 Won</button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 12, background: '#fee2e2', color: 'var(--red)', borderColor: '#fca5a5' }}
+                                disabled={updating === c.id} onClick={() => handleStatus(c.id, 'lost')}>Lost ✗</button>
+                            </>)}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -359,11 +570,11 @@ export default function OutreachQueue() {
             <span className="card-title">📞 Phone Calls — {callFiltered.length} companies</span>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {[
-                { key: 'all',           label: 'All' },
-                { key: 'pending',       label: '🕐 Pending' },
-                { key: 'completed',     label: '✓ Completed' },
-                { key: 'call_back',     label: '↩ Call Back' },
-                { key: 'meeting_booked',label: '📅 Meeting Booked' },
+                { key: 'all',            label: 'All' },
+                { key: 'pending',        label: '🕐 Pending' },
+                { key: 'completed',      label: '✓ Completed' },
+                { key: 'call_back',      label: '↩ Call Back' },
+                { key: 'meeting_booked', label: '📅 Meeting Booked' },
               ].map(({ key, label }) => (
                 <button
                   key={key}
@@ -399,7 +610,7 @@ export default function OutreachQueue() {
                 </thead>
                 <tbody>
                   {callFiltered.map(c => {
-                    const cs = callStatus[c.id] || 'pending'
+                    const cs  = callStatus[c.id] || 'pending'
                     const cfg = CALL_STATUS_CONFIG[cs] || CALL_STATUS_CONFIG.pending
                     return (
                       <tr key={c.id}>

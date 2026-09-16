@@ -86,9 +86,14 @@ app = FastAPI(
     version     = "1.0.0",
 )
 
+import os as _os
+
+_raw_origins = _os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins  = ["http://localhost:5173", "http://localhost:3000"],
+    allow_origins  = _allowed_origins,
     allow_methods  = ["*"],
     allow_headers  = ["*"],
 )
@@ -146,6 +151,9 @@ class SuppressionEntry(BaseModel):
     company_number: Optional[str] = None
     email:          Optional[str] = None
     reason:         str = "manual"
+
+class SendSelectedRequest(BaseModel):
+    company_ids: list[str]
 
 
 # ──────────────────────────────────────────────
@@ -336,6 +344,128 @@ def outreach_stats():
         return get_outreach_stats()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/outreach/send-selected")
+def send_selected_emails(request: SendSelectedRequest):
+    """
+    Bulk-send emails to selected companies.
+    - Backend re-checks eligibility independently (don't trust frontend).
+    - Finds or creates a campaign_member for each company in the first active campaign.
+    - Reuses send_campaign_email() for DRY_RUN safety, compliance checks, and event recording.
+    - Sets outreach_status = 'emailed' on success.
+    """
+    import os
+    from campaign_engine import send_campaign_email
+
+    DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+    BLOCKED_STATUSES = {"emailed", "replied", "meeting_booked", "won", "lost", "suppressed"}
+
+    if not request.company_ids:
+        raise HTTPException(status_code=400, detail="No company IDs provided")
+
+    # Require an active campaign — send_campaign_email compliance gate checks this anyway
+    campaigns = get_campaigns(status="active", limit=1)
+    if not campaigns:
+        raise HTTPException(
+            status_code=400,
+            detail="No active campaign found. Create and activate a campaign first in the Campaigns tab.",
+        )
+    campaign_id = campaigns[0]["id"]
+
+    results = {
+        "sent":     0,
+        "skipped":  0,
+        "failed":   0,
+        "dry_run":  DRY_RUN,
+        "details":  [],
+    }
+
+    for company_id in request.company_ids:
+        entry = {"company_id": company_id}
+        try:
+            # 1. Re-check eligibility
+            rows = _db.table("companies").select(
+                "id, name, outreach_status"
+            ).eq("id", company_id).limit(1).execute().data
+            if not rows:
+                results["failed"] += 1
+                results["details"].append({**entry, "status": "failed", "reason": "Company not found"})
+                continue
+
+            company    = rows[0]
+            entry["name"] = company.get("name", company_id)
+            os_status  = company.get("outreach_status") or "none"
+
+            if os_status in BLOCKED_STATUSES:
+                results["skipped"] += 1
+                results["details"].append({
+                    **entry, "status": "skipped",
+                    "reason": f"Already {os_status}",
+                })
+                continue
+
+            # 2. Find or create a campaign_member
+            existing = (
+                _db.table("campaign_members")
+                .select("id, status")
+                .eq("campaign_id", campaign_id)
+                .eq("company_id", company_id)
+                .execute()
+                .data or []
+            )
+            if existing:
+                member = existing[0]
+                if member.get("status") == "sent":
+                    results["skipped"] += 1
+                    results["details"].append({
+                        **entry, "status": "skipped",
+                        "reason": "Already sent in this campaign",
+                    })
+                    continue
+                member_id = member["id"]
+            else:
+                contacts  = get_contacts_for_company(company_id)
+                contact_id = contacts[0]["id"] if contacts else None
+                new_member = add_campaign_member({
+                    "campaign_id": campaign_id,
+                    "company_id":  company_id,
+                    "contact_id":  contact_id,
+                    "status":      "queued",
+                })
+                if not new_member or not new_member.get("id"):
+                    results["failed"] += 1
+                    results["details"].append({
+                        **entry, "status": "failed",
+                        "reason": "Could not create campaign member",
+                    })
+                    continue
+                member_id = new_member["id"]
+
+            # 3. Send (or dry-run)
+            send_result = send_campaign_email(member_id)
+
+            if send_result.get("success"):
+                update_outreach_status(company_id, "emailed")
+                results["sent"] += 1
+                results["details"].append({
+                    **entry,
+                    "status":     "sent",
+                    "dry_run":    send_result.get("dry_run", True),
+                    "message_id": send_result.get("message_id"),
+                })
+            else:
+                results["failed"] += 1
+                results["details"].append({
+                    **entry, "status": "failed",
+                    "reason": send_result.get("error", "Unknown error"),
+                })
+
+        except Exception as e:
+            results["failed"] += 1
+            results["details"].append({**entry, "status": "failed", "reason": str(e)})
+
+    return results
 
 
 # ──────────────────────────────────────────────
