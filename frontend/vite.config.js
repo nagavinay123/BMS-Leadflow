@@ -6,14 +6,15 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // All /api calls forwarded to the FastAPI backend
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'https://bms-leadflow-production.up.railway.app',
         changeOrigin: true,
+        secure: true,
       },
       '/health': {
-        target: 'http://localhost:8000',
+        target: 'https://bms-leadflow-production.up.railway.app',
         changeOrigin: true,
+        secure: true,
       },
     },
   },
