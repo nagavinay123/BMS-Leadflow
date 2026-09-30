@@ -7,12 +7,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://bms-leadflow-production.up.railway.app',
+        target: 'https://bms-leadflow-production-357e.up.railway.app',
         changeOrigin: true,
         secure: true,
       },
       '/health': {
-        target: 'https://bms-leadflow-production.up.railway.app',
+        target: 'https://bms-leadflow-production-357e.up.railway.app',
         changeOrigin: true,
         secure: true,
       },
